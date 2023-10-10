@@ -11,7 +11,6 @@ import shutil
 from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure as MS_SSIM
 from torchmetrics.image import PeakSignalNoiseRatio as PSNR
 import numpy as np
-from icecream import ic
 
 
 # +

@@ -1,0 +1,7 @@
+torch
+torcvision
+pillow
+matplotlib
+tqdm
+torchmetrics[image]
+numpy
