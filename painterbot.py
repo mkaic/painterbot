@@ -1,16 +1,19 @@
 # +
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.transforms as T
+
+torch.cuda.empty_cache()
 
 from PIL import Image
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 from pathlib import Path
 import shutil
-from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure as MS_SSIM
-from torchmetrics.image import PeakSignalNoiseRatio as PSNR
 import numpy as np
+import time
+import kornia
 
 
 # +
@@ -64,16 +67,15 @@ class StrokeGroup(nn.Module):
         self.epsilon = 1e-6
 
         self.n_strokes = n_strokes
-
-        self.ms_ssim = MS_SSIM(data_range=1.0)
-        self.psnr = PSNR()
+                
+        self.mse = nn.MSELoss()
 
     def loss_fn(self, x, y):
-        psnr = self.psnr(x, y) / 20  # Peak Signal-to-Noise Ratio
-        ms_ssim = self.ms_ssim(x, y)  # Multiscale Structural Similarity Index Measure
-
-        loss = psnr + ms_ssim
-        loss = loss * -1
+        
+        l2_loss = torch.mean(torch.square(x - y))
+        
+        loss = l2_loss
+        
         return loss
 
     def calculate_strokes(self, canvas):
@@ -364,6 +366,7 @@ def optimize_grouped_painting(
     show_inner_pbar=True,
     error_map_temperature=1.0,
     log_every=10,
+    dtype=torch.float,
 ):
     if n_groups == 1:
         show_inner_pbar = True
@@ -373,7 +376,7 @@ def optimize_grouped_painting(
     painting = Painting(
         n_groups=n_groups,
         target=target,
-    ).to(device)
+    ).to(device).to(dtype)
 
     canvas = torch.zeros_like(target)
 
@@ -400,16 +403,15 @@ def optimize_grouped_painting(
 
     for group_number in outer_pbar:
         painting.active_group = group_number
-        painting.stroke_groups.append(
-            StrokeGroup(group_number=group_number, n_strokes=n_strokes_per_group).to(
-                device
-            )
-        )
-        painting.stroke_groups[group_number].smart_initialize(
+        new_stroke_group = StrokeGroup(group_number=group_number, n_strokes=n_strokes_per_group).to(device).to(dtype)
+        new_stroke_group.smart_initialize(
             target, canvas, error_map_temperature
         )
+        painting.stroke_groups.append(
+            new_stroke_group
+        )
 
-        optimizer = torch.optim.Adam(painting.parameters(), lr=lr, betas=(0.8, 0.9))
+        optimizer = torch.optim.Adam(painting.parameters(), lr=lr, betas=(0.9, 0.95))
 
         if show_inner_pbar:
             inner_iterator = tqdm(range(iterations), leave=False)
@@ -463,10 +465,11 @@ def optimize_grouped_painting(
 # torch.autograd.set_detect_anomaly(True)
 
 device = "cuda:1"
+dtype = torch.bfloat16
 
-image_size = 256
+image_size = 512
 
-target = Image.open("source_images/rick.png").convert("RGB")
+target = Image.open("source_images/lisa.jpg").convert("RGB")
 
 
 preprocessing = T.Compose(
@@ -479,21 +482,36 @@ preprocessing = T.Compose(
 target = preprocessing(target)
 target = target.to(device)
 target = target / 255
-target = target
+
+target = target.to(dtype)
 
 painting, loss_history, mae_history = optimize_grouped_painting(
     target,
-    n_groups=6,
+    n_groups=10,
     n_strokes_per_group=50,
     iterations=300,
     lr=0.01,
     show_inner_pbar=True,
     error_map_temperature=1.0,
     log_every=10,
+    dtype=dtype
 )
 
-canvas = torch.zeros(3, 1024, 1024, device=device)
+canvas = torch.zeros(3, 512, 512, device=device)
 result = painting.render_timelapse_frames(canvas, "painting_timelapse_frames")
+
+# +
+# 0.03159 for direct optimization of MAE. WAY faster than using MSSIM. 10 groups of 50, 200 iterations
+# 0.03218 achieved by swapping MAE for MSE. okay, back to MAE
+# 0.03178 achieved by going for 5 groups of 100 strokes instead of 10 groups of 50
+# 0.03228 achieved with 1 group of 500 strokes
+# 0.03193 achieved with 500 groups of 1 stroke
+# Multi scale does nothing
+# what if i use LPIPs now?
+
+# bfloat16: took 2 minutes, got MAE of 0.03088. Memory usage: 
+# float16: instant nan loss
+# float32. memory usage: 2.9GB
 
 # +
 loss_history_arr, mae_history_arr = np.array(loss_history), np.array(mae_history)
@@ -509,3 +527,6 @@ loss_history_arr = loss_history_arr + np.min(mae_history_arr)
 plt.plot(range(len(loss_history_arr)), loss_history_arr, label="Loss")
 plt.plot(range(len(mae_history_arr)), mae_history_arr, label="MAE")
 plt.legend()
+# -
+
+
