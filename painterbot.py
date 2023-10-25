@@ -13,7 +13,9 @@ from pathlib import Path
 import shutil
 import numpy as np
 import time
-import kornia
+import math
+
+from torchmetrics.functional.image import image_gradients
 
 
 # +
@@ -32,7 +34,7 @@ def batch_unravel_index_xy(indices, shape, device):
 
 
 class StrokeGroup(nn.Module):
-    def __init__(self, group_number, n_strokes):
+    def __init__(self, group_number, n_strokes, dtype):
         super().__init__()
 
         self.group_number = group_number
@@ -68,13 +70,13 @@ class StrokeGroup(nn.Module):
 
         self.n_strokes = n_strokes
                 
-        self.mse = nn.MSELoss()
+        self.mae = nn.L1Loss().to(dtype)
 
     def loss_fn(self, x, y):
         
-        l2_loss = torch.mean(torch.square(x - y))
+        l2 = self.mae(x,y)
         
-        loss = l2_loss
+        loss = l2
         
         return loss
 
@@ -403,7 +405,7 @@ def optimize_grouped_painting(
 
     for group_number in outer_pbar:
         painting.active_group = group_number
-        new_stroke_group = StrokeGroup(group_number=group_number, n_strokes=n_strokes_per_group).to(device).to(dtype)
+        new_stroke_group = StrokeGroup(group_number=group_number, n_strokes=n_strokes_per_group, dtype=dtype).to(device).to(dtype)
         new_stroke_group.smart_initialize(
             target, canvas, error_map_temperature
         )
@@ -411,12 +413,13 @@ def optimize_grouped_painting(
             new_stroke_group
         )
 
-        optimizer = torch.optim.Adam(painting.parameters(), lr=lr, betas=(0.9, 0.95))
+        optimizer = torch.optim.Adam(painting.parameters(), lr=lr, betas=(0.8, 0.9))
 
+        adaptive_iterations = max(iterations - (50 * group_number), 50)
         if show_inner_pbar:
-            inner_iterator = tqdm(range(iterations), leave=False)
+            inner_iterator = tqdm(range(adaptive_iterations), leave=False)
         else:
-            inner_iterator = range(iterations)
+            inner_iterator = range(adaptive_iterations)
 
         for i in inner_iterator:
             result, loss, mae = painting(canvas)
