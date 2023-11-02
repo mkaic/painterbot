@@ -1,18 +1,12 @@
 # +
+import shutil
+from pathlib import Path
+from typing import List
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torchvision.transforms as T
-
-torch.cuda.empty_cache()
-
-from PIL import Image
-import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
-from pathlib import Path
-import shutil
-from typing import List
-import os
 
 
 # +
