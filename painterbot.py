@@ -185,8 +185,8 @@ class Renderer(nn.Module):
 
         # Offset coordinates to change where the center of the
         # polar coordinates is placed
-        offset_x = parameters.center_x - cos_rot * parameters.mu_r
-        offset_y = parameters.center_y - sin_rot * parameters.mu_r
+        offset_x = parameters.center_x - (cos_rot * parameters.mu_r)
+        offset_y = parameters.center_y - (sin_rot * parameters.mu_r)
         cartesian_offset = torch.stack(
             [offset_x, offset_y], dim=1
         )  # 2x (N x 1) -> (N x 2 x 1)
@@ -398,8 +398,8 @@ if __name__ == "__main__":
     params, renderer, loss_history, mae_history = optimize(
         target,
         n_groups=10,
-        n_strokes_per_group=50,
-        iterations=300,
+        n_strokes_per_group=10,
+        iterations=100,
         lr=0.01,
         show_inner_pbar=True,
         error_map_temperature=1.0,
@@ -409,6 +409,8 @@ if __name__ == "__main__":
     result = renderer.render_timelapse_frames(
         canvas, params, Path("painting_timelapse_frames")
     )
+
+    print(torch.cat([params.center_x.data, params.center_y.data], dim=-1))
 
 # +
 # 0.03159 for direct optimization of MAE. WAY faster than using MSSIM. 10 groups of 50, 200 iterations
