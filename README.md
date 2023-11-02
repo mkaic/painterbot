@@ -2,7 +2,7 @@
 ![Mona Lisa reconstructed with 500 strokes](assets/lisa.gif)
 
 ## Basic idea
-This project was inspired by [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/), but I have not used any of their code. My algorithm departs conceptually from theres in a few key places:
+This project was inspired by [3D Gaussian Splatting](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/), but I have not used any of their code. My algorithm departs conceptually from theirs in a few key places:
 
 1. I'm optimizing 2D gaussians, not 3D.
 2. I'm evaluating the gaussians on polar coordinates to allow for variable circular curvature.
