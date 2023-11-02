@@ -66,6 +66,8 @@ class StrokeParameters(nn.Module):
         self.center_x.data.clamp_(0, self.width_to_height_ratio)
         self.center_y.data.clamp_(0, 1)
 
+        self.rotation.data.clamp_(-torch.pi, torch.pi)
+
         # Guassian gets weirdly pinched if it gets too close to the pole
         self.mu_r.data.clamp_(0.05, 2)
         self.sigma_r.data.clamp_(0.0001, 0.2)
@@ -160,16 +162,12 @@ class Renderer(nn.Module):
     def loss_fn(self, x, y):
         return torch.mean(torch.abs(x - y))
 
-    def calculate_strokes(self, canvas: torch.Tensor, parameters: StrokeParameters):
-        device = canvas.device
-
-        n_strokes = len(parameters.alpha)
-
+    def make_coordinates(self, canvas: torch.Tensor, parameters: StrokeParameters):
         # Aspect ratio should always be >1:1, never 1:<1
         height, width = canvas.shape[-2:]
 
-        w = torch.linspace(0, width - 1, width, device=device) / height
-        h = torch.linspace(0, height - 1, height, device=device) / height
+        w = torch.linspace(0, width - 1, width, device=canvas.device) / height
+        h = torch.linspace(0, height - 1, height, device=canvas.device) / height
 
         x, y = torch.meshgrid(w, h, indexing="xy")
 
@@ -177,8 +175,15 @@ class Renderer(nn.Module):
         # once for each stroke in the group
         cartesian_coordinates = torch.stack([x, y], dim=0).view(1, 2, -1)
         cartesian_coordinates = cartesian_coordinates.repeat(
-            n_strokes, 1, 1
+            len(parameters.alpha), 1, 1
         )  # (1 x 2 x M) -> (N x 2 x M)
+
+        return cartesian_coordinates
+
+    def evaluate_pdf(
+        self, cartesian_coordinates: torch.Tensor, parameters: StrokeParameters
+    ) -> torch.Tensor:
+        n_strokes = len(parameters.alpha)
 
         cos_rot = torch.cos(parameters.rotation)
         sin_rot = torch.sin(parameters.rotation)
@@ -186,23 +191,19 @@ class Renderer(nn.Module):
         # Offset coordinates to change where the center of the
         # polar coordinates is placed
         offset_x = parameters.center_x - (cos_rot * parameters.mu_r)
-        offset_y = parameters.center_y - (sin_rot * parameters.mu_r)
+        # the direction of the y-axis is inverted, so we add rather than subtract
+        offset_y = parameters.center_y + (sin_rot * parameters.mu_r)
         cartesian_offset = torch.stack(
             [offset_x, offset_y], dim=1
         )  # 2x (N x 1) -> (N x 2 x 1)
         cartesian_coordinates = cartesian_coordinates - cartesian_offset
 
-        rotation_matrices = torch.cat([cos_rot, -sin_rot, sin_rot, -cos_rot], dim=-1)
+        rotation_matrices = torch.cat([cos_rot, -sin_rot, sin_rot, cos_rot], dim=-1)
         rotation_matrices = rotation_matrices.view(n_strokes, 2, 2)
-        cartesian_coordinates = torch.matmul(rotation_matrices, cartesian_coordinates)
+        cartesian_coordinates = torch.bmm(rotation_matrices, cartesian_coordinates)
 
         # Convert to polar coordinates and apply polar-space offsets
-        r = torch.sqrt(
-            torch.sum(
-                torch.square(cartesian_coordinates + self.epsilon),
-                dim=1,  # (N x 2 x M) -> (N x M)
-            )
-        )
+        r = torch.linalg.norm(cartesian_coordinates, dim=1)  # (N x 2 x M) -> (N x M)
         r = r - parameters.mu_r
 
         theta = torch.atan2(
@@ -235,18 +236,37 @@ class Renderer(nn.Module):
         )
         pdf = torch.exp(-1 * torch.sum(polar_coordinates, dim=1))
 
-        # Now map the PDF to the range [0, alpha]
-        maxes, _ = pdf.max(dim=-1)
-        maxes = maxes.view(n_strokes, 1)
-        pdf = pdf / (maxes + self.epsilon)
-
-        pdf = pdf.view(n_strokes, 1, height, width)
-        pdf = pdf * parameters.alpha
         return pdf
+
+    def calculate_strokes(
+        self, canvas: torch.Tensor, parameters: StrokeParameters
+    ) -> torch.Tensor:
+        height, width = canvas.shape[-2:]
+        centers = torch.stack(
+            [parameters.center_x, parameters.center_y], dim=1
+        )  # (N x 2 x 1)
+
+        stroke_maxes = self.evaluate_pdf(
+            cartesian_coordinates=centers, parameters=parameters
+        )  # (N x 1)
+
+        coordinates = self.make_coordinates(
+            canvas=canvas, parameters=parameters
+        )  # (N x 2 x M)
+
+        strokes = self.evaluate_pdf(
+            cartesian_coordinates=coordinates, parameters=parameters
+        )  # (N x M)
+
+        strokes = strokes / (stroke_maxes + self.epsilon)
+        strokes = strokes.view(len(parameters.alpha), 1, height, width)
+        strokes = strokes * parameters.alpha
+
+        return strokes
 
     def render_stroke(
         self, stroke: torch.Tensor, color: torch.Tensor, canvas: torch.Tensor
-    ):
+    ) -> torch.Tensor:
         # Use the stroke as an alpha to blend between the canvas and a color
         canvas = ((torch.ones_like(stroke) - stroke) * canvas) + (stroke * color)
         # Clamp canvas to valid RGB color space.
@@ -256,8 +276,8 @@ class Renderer(nn.Module):
 
     def forward(
         self, canvas: torch.Tensor, parameters: StrokeParameters, target: torch.Tensor
-    ):
-        strokes = self.calculate_strokes(canvas, parameters)  # (N x 1 x H x W)
+    ) -> torch.Tensor:
+        strokes = self.calculate_strokes(canvas, parameters)
 
         loss = 0
         for stroke, color in zip(strokes, parameters.color):
@@ -270,7 +290,7 @@ class Renderer(nn.Module):
 
     def render_timelapse_frames(
         self, canvas: torch.Tensor, parameters: StrokeParameters, output_path: Path
-    ):
+    ) -> torch.Tensor:
         output_path = Path(output_path)
         if output_path.exists():
             shutil.rmtree(output_path)
@@ -279,11 +299,24 @@ class Renderer(nn.Module):
         with torch.no_grad():
             strokes = self.calculate_strokes(canvas, parameters)
 
-            for i, (stroke, color) in enumerate(zip(strokes, parameters.color)):
+            height, width = canvas.shape[-2:]
+
+            for i, (stroke, color, center_x, center_y) in enumerate(
+                zip(strokes, parameters.color, parameters.center_x, parameters.center_y)
+            ):
                 canvas = self.render_stroke(stroke=stroke, color=color, canvas=canvas)
-                T.functional.to_pil_image(canvas.cpu()).save(
-                    output_path / f"{i:05}.jpg"
-                )
+
+                center_x = int(center_x * width)
+                center_y = int(center_y * height)
+
+                to_save = canvas.clone().cpu()
+                # to_save[
+                #     :,
+                #     max(center_y - 3, 0) : min(center_y + 3, height),
+                #     max(center_x - 3, 0) : min(center_x + 3, width),
+                # ] = torch.tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
+
+                T.functional.to_pil_image(to_save).save(output_path / f"{i:05}.jpg")
 
             return canvas
 
@@ -398,8 +431,8 @@ if __name__ == "__main__":
     params, renderer, loss_history, mae_history = optimize(
         target,
         n_groups=10,
-        n_strokes_per_group=10,
-        iterations=100,
+        n_strokes_per_group=50,
+        iterations=300,
         lr=0.01,
         show_inner_pbar=True,
         error_map_temperature=1.0,
@@ -409,8 +442,6 @@ if __name__ == "__main__":
     result = renderer.render_timelapse_frames(
         canvas, params, Path("painting_timelapse_frames")
     )
-
-    print(torch.cat([params.center_x.data, params.center_y.data], dim=-1))
 
 # +
 # 0.03159 for direct optimization of MAE. WAY faster than using MSSIM. 10 groups of 50, 200 iterations
