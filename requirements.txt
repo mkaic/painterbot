@@ -1,5 +1,5 @@
 torch
-torcvision
+torchvision
 pillow
 matplotlib
 tqdm

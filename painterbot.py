@@ -35,11 +35,11 @@ class StrokeParameters(nn.Module):
 
         self.width_to_height_ratio = width_to_height_ratio
 
-        self.offset_x = torch.ones(n_strokes, 1) * self.width_to_height_ratio * 0.5
-        self.offset_x = nn.Parameter(self.offset_x)
+        self.center_x = torch.ones(n_strokes, 1) * self.width_to_height_ratio * 0.5
+        self.center_x = nn.Parameter(self.center_x)
 
-        self.offset_y = torch.ones(n_strokes, 1) * 0.5
-        self.offset_y = nn.Parameter(self.offset_y)
+        self.center_y = torch.ones(n_strokes, 1) * 0.5
+        self.center_y = nn.Parameter(self.center_y)
 
         self.rotation = (torch.rand(n_strokes, 1) - 0.5) * 2 * torch.pi
         self.rotation = nn.Parameter(self.rotation)
@@ -63,8 +63,8 @@ class StrokeParameters(nn.Module):
         self.alpha = nn.Parameter(self.alpha)
 
     def clamp_parameters(self):
-        self.offset_x.data.clamp_(0, self.width_to_height_ratio)
-        self.offset_y.data.clamp_(0, 1)
+        self.center_x.data.clamp_(0, self.width_to_height_ratio)
+        self.center_y.data.clamp_(0, 1)
 
         # Guassian gets weirdly pinched if it gets too close to the pole
         self.mu_r.data.clamp_(0.05, 2)
@@ -72,7 +72,7 @@ class StrokeParameters(nn.Module):
 
         # Strokes can only ever curve a certain amount to avoid a bunch of
         # obvious perfect circles showing up in the painting
-        self.sigma_theta.data.clamp_(0.001, torch.pi / 2)
+        self.sigma_theta.data.clamp_(0.001, torch.pi / 4)
 
         self.alpha.data.clamp_(0.01, 1)
         self.color.data.clamp_(0, 1)
@@ -101,17 +101,17 @@ class StrokeParameters(nn.Module):
             -1
         )  # (N, 1) -> (2, N, 1)
 
-        offset_x, offset_y = coordinates
+        center_x, center_y = coordinates
 
-        color = target[:, offset_y, offset_x].view(len(self.alpha), 3, 1, 1)
+        color = target[:, center_y, center_x].view(len(self.alpha), 3, 1, 1)
 
-        offset_x = offset_x / height
-        offset_x = offset_x.detach().clone()
-        self.offset_x.data = offset_x
+        center_x = center_x / height
+        center_x = center_x.detach().clone()
+        self.center_x.data = center_x
 
-        offset_y = offset_y / height
-        offset_y = offset_y.detach().clone()
-        self.offset_y.data = offset_y
+        center_y = center_y / height
+        center_y = center_y.detach().clone()
+        self.center_y.data = center_y
 
         color = color.detach().clone()
         self.color.data = color
@@ -124,11 +124,11 @@ def concat_stroke_parameters(stroke_parameters: List[StrokeParameters]):
 
     if len(stroke_parameters) > 1:
         for param in stroke_parameters[1:]:
-            concatted.offset_x.data = torch.cat(
-                [concatted.offset_x.data, param.offset_x.data], dim=0
+            concatted.center_x.data = torch.cat(
+                [concatted.center_x.data, param.center_x.data], dim=0
             )
-            concatted.offset_y.data = torch.cat(
-                [concatted.offset_y.data, param.offset_y.data], dim=0
+            concatted.center_y.data = torch.cat(
+                [concatted.center_y.data, param.center_y.data], dim=0
             )
             concatted.rotation.data = torch.cat(
                 [concatted.rotation.data, param.rotation.data], dim=0
@@ -180,18 +180,20 @@ class Renderer(nn.Module):
             n_strokes, 1, 1
         )  # (1 x 2 x M) -> (N x 2 x M)
 
+        cos_rot = torch.cos(parameters.rotation)
+        sin_rot = torch.sin(parameters.rotation)
+
         # Offset coordinates to change where the center of the
         # polar coordinates is placed
+        offset_x = parameters.center_x - cos_rot * parameters.mu_r
+        offset_y = parameters.center_y - sin_rot * parameters.mu_r
         cartesian_offset = torch.stack(
-            [parameters.offset_x, parameters.offset_y], dim=1
+            [offset_x, offset_y], dim=1
         )  # 2x (N x 1) -> (N x 2 x 1)
         cartesian_coordinates = cartesian_coordinates - cartesian_offset
 
-        cos_rot = torch.cos(parameters.rotation)
-        sin_rot = torch.sin(parameters.rotation)
         rotation_matrices = torch.cat([cos_rot, -sin_rot, sin_rot, -cos_rot], dim=-1)
         rotation_matrices = rotation_matrices.view(n_strokes, 2, 2)
-
         cartesian_coordinates = torch.matmul(rotation_matrices, cartesian_coordinates)
 
         # Convert to polar coordinates and apply polar-space offsets
@@ -395,9 +397,9 @@ if __name__ == "__main__":
 
     params, renderer, loss_history, mae_history = optimize(
         target,
-        n_groups=3,
-        n_strokes_per_group=10,
-        iterations=100,
+        n_groups=10,
+        n_strokes_per_group=50,
+        iterations=300,
         lr=0.01,
         show_inner_pbar=True,
         error_map_temperature=1.0,
