@@ -1,7 +1,5 @@
 torch
 torchvision
 pillow
-matplotlib
 tqdm
-torchmetrics[image]
 numpy
