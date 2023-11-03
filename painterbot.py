@@ -1,27 +1,16 @@
 # +
 import shutil
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 import torch
 import torch.nn as nn
 import torchvision.transforms as T
 from tqdm.auto import tqdm
 
+EPSILON = 1e-8
 
 # +
-def batch_unravel_index_xy(indices, shape, device):
-    output = torch.zeros(2, len(indices), dtype=torch.long, device=device)
-
-    # x coordinates (which column the flat index is in)
-    # are found by moduloing it by the length of a row
-    output[0, :] = indices % shape[-1]
-
-    # y coordinates (which row the flat index is in) are
-    # found by integer-dividing it by the length of a column
-    output[1, :] = torch.div(indices, shape[-2], rounding_mode="floor")
-
-    return output
 
 
 class StrokeParameters(nn.Module):
@@ -30,7 +19,8 @@ class StrokeParameters(nn.Module):
 
         self.width_to_height_ratio = width_to_height_ratio
 
-        self.center_x = torch.ones(n_strokes, 1) * self.width_to_height_ratio * 0.5
+        self.center_x = torch.ones(n_strokes, 1) * \
+            self.width_to_height_ratio * 0.5
         self.center_x = nn.Parameter(self.center_x)
 
         self.center_y = torch.ones(n_strokes, 1) * 0.5
@@ -57,6 +47,8 @@ class StrokeParameters(nn.Module):
         self.alpha = self.alpha.view(n_strokes, 1, 1, 1)
         self.alpha = nn.Parameter(self.alpha)
 
+        self.n_strokes = n_strokes
+
     def clamp_parameters(self):
         self.center_x.data.clamp_(0, self.width_to_height_ratio)
         self.center_y.data.clamp_(0, 1)
@@ -80,7 +72,8 @@ class StrokeParameters(nn.Module):
         device = target.device
         height, width = target.shape[-2:]
 
-        error_map = torch.mean(torch.abs(target - canvas), dim=0)  # (3, H, W) -> (H, W)
+        error_map = torch.mean(torch.abs(target - canvas),
+                               dim=0)  # (3, H, W) -> (H, W)
 
         # Unravel the error map, then softmax to get probability distribution over
         # the pixel locations, then sample from it
@@ -88,19 +81,27 @@ class StrokeParameters(nn.Module):
             error_map.view(-1) / temperature, dim=0
         )  # (H, W) -> (H*W)
 
-        n_samples = len(self.alpha)
+        n_samples = self.n_strokes
 
         coordinates = torch.multinomial(flat_error_pdf, n_samples)  # (N, 1)
 
-        coordinates = batch_unravel_index_xy(
-            coordinates, (height, width), device=device
-        ).unsqueeze(
-            -1
-        )  # (N, 1) -> (2, N, 1)
+        new_coords = torch.zeros(
+            2, len(coordinates), dtype=torch.long, device=device)
+
+        # x coordinates (which column the flat index is in)
+        # are found by moduloing it by the length of a row
+        new_coords[0, :] = coordinates % width
+
+        # y coordinates (which row the flat index is in) are
+        # found by integer-dividing it by the length of a column
+        new_coords[1, :] = torch.div(
+            coordinates, height, rounding_mode="floor")
+
+        coordinates = new_coords.unsqueeze(-1)  # (N, 1) -> (2, N, 1)
 
         center_x, center_y = coordinates
 
-        color = target[:, center_y, center_x].view(len(self.alpha), 3, 1, 1)
+        color = target[:, center_y, center_x].view(self.n_strokes, 3, 1, 1)
 
         center_x = center_x / height
         center_x = center_x.detach().clone()
@@ -116,7 +117,9 @@ class StrokeParameters(nn.Module):
         self.clamp_parameters()
 
 
-def concat_stroke_parameters(stroke_parameters: List[StrokeParameters]):
+def concat_stroke_parameters(
+    stroke_parameters: List[StrokeParameters],
+) -> StrokeParameters:
     concatted = stroke_parameters[0]
 
     if len(stroke_parameters) > 1:
@@ -145,175 +148,188 @@ def concat_stroke_parameters(stroke_parameters: List[StrokeParameters]):
             concatted.alpha.data = torch.cat(
                 [concatted.alpha.data, param.alpha.data], dim=0
             )
+            concatted.n_strokes += param.n_strokes
 
     return concatted
 
 
-class Renderer(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.epsilon = 1e-8
+def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    return torch.mean(torch.abs(x - y))
 
-    def loss_fn(self, x, y):
-        return torch.mean(torch.abs(x - y))
 
-    def make_coordinates(self, canvas: torch.Tensor, parameters: StrokeParameters):
-        # Aspect ratio should always be >1:1, never 1:<1
+def make_coordinates(canvas: torch.Tensor, n_strokes: int) -> torch.Tensor:
+    # Aspect ratio should always be >1:1, never 1:<1
+    height, width = canvas.shape[-2:]
+
+    w = torch.linspace(0, width - 1, width, device=canvas.device) / height
+    h = torch.linspace(0, height - 1, height, device=canvas.device) / height
+
+    x, y = torch.meshgrid(w, h, indexing="xy")
+
+    # Reshape coordinates into a list of XY pairs, then duplicate it
+    # once for each stroke in the group
+    cartesian_coordinates = torch.stack([x, y], dim=0).view(1, 2, -1)
+    cartesian_coordinates = cartesian_coordinates.repeat(
+        n_strokes, 1, 1
+    )  # (1 x 2 x M) -> (N x 2 x M)
+
+    return cartesian_coordinates
+
+
+def evaluate_pdf(
+    cartesian_coordinates: torch.Tensor,
+    parameters: StrokeParameters,
+    n_strokes: int,
+) -> torch.Tensor:
+    cos_rot = torch.cos(parameters.rotation)
+    sin_rot = torch.sin(parameters.rotation)
+
+    # Offset coordinates to change where the center of the
+    # polar coordinates is placed
+    offset_x = parameters.center_x - (cos_rot * parameters.mu_r)
+    # the direction of the y-axis is inverted, so we add rather than subtract
+    offset_y = parameters.center_y + (sin_rot * parameters.mu_r)
+    cartesian_offset = torch.stack(
+        [offset_x, offset_y], dim=1
+    )  # 2x (N x 1) -> (N x 2 x 1)
+    cartesian_coordinates = cartesian_coordinates - cartesian_offset
+
+    rotation_matrices = torch.cat(
+        [cos_rot, -sin_rot, sin_rot, cos_rot], dim=-1)
+    rotation_matrices = rotation_matrices.view(n_strokes, 2, 2)
+    cartesian_coordinates = torch.bmm(rotation_matrices, cartesian_coordinates)
+
+    # Convert to polar coordinates and apply polar-space offsets
+    # (N x 2 x M) -> (N x M)
+    r = torch.linalg.norm(cartesian_coordinates, dim=1)
+    r = r - parameters.mu_r
+
+    theta = torch.atan2(
+        cartesian_coordinates[:, 1] + EPSILON,
+        cartesian_coordinates[:, 0] + EPSILON,
+    )  # -> (N x M), ranges from -pi to pi
+
+    # Simplified Gaussian PDF function:
+    # e ^ (
+    #    -1
+    #     * (
+    #         ((x - mu_x) ^ 2 / (2 * sigma_x ^ 2))
+    #         + ((y - mu_y) ^ 2 / (2 * sigma_y ^ 2))
+    #     )
+    # )
+
+    r = torch.square(r)
+    theta = torch.square(theta)
+
+    # sigma_r is expressed as a fraction of the radius instead of
+    # an absolute quantity
+    sigma_r = parameters.sigma_r * parameters.mu_r
+    sigmas = torch.stack([sigma_r, parameters.sigma_theta],
+                         dim=1).view(n_strokes, 2, 1)
+
+    polar_coordinates = torch.stack([r, theta], dim=1)
+    polar_coordinates = polar_coordinates / \
+        (2 * torch.square(sigmas) + EPSILON)
+    pdf = torch.exp(-1 * torch.sum(polar_coordinates, dim=1))
+
+    return pdf
+
+
+def calculate_strokes(
+    canvas: torch.Tensor,
+    parameters: StrokeParameters,
+    n_strokes: int,
+) -> torch.Tensor:
+    height, width = canvas.shape[-2:]
+    centers = torch.stack(
+        [parameters.center_x, parameters.center_y], dim=1
+    )  # (N x 2 x 1)
+
+    stroke_maxes = evaluate_pdf(
+        cartesian_coordinates=centers, parameters=parameters, n_strokes=n_strokes
+    )  # (N x 1)
+
+    coordinates = make_coordinates(
+        canvas=canvas,
+        n_strokes=n_strokes,
+    )  # (N x 2 x M)
+
+    strokes = evaluate_pdf(
+        cartesian_coordinates=coordinates, parameters=parameters, n_strokes=n_strokes
+    )  # (N x M)
+
+    strokes = strokes / (stroke_maxes + EPSILON)
+    strokes = strokes.view(n_strokes, 1, height, width)
+    strokes = strokes * parameters.alpha
+
+    return strokes
+
+
+def render_stroke(
+    stroke: torch.Tensor, color: torch.Tensor, canvas: torch.Tensor
+) -> Tuple[torch.Tensor]:
+    # Use the stroke as an alpha to blend between the canvas and a color
+    canvas = ((torch.ones_like(stroke) - stroke) * canvas) + (stroke * color)
+    # Clamp canvas to valid RGB color space.
+    canvas = canvas.clamp(0, 1)
+
+    return canvas
+
+
+def render(
+    canvas: torch.Tensor,
+    parameters: StrokeParameters,
+    target: torch.Tensor,
+    n_strokes: int,
+) -> torch.Tensor:
+    strokes = calculate_strokes(canvas, parameters, n_strokes=n_strokes)
+
+    loss = 0
+    for i in range(n_strokes):
+        stroke = strokes[i]
+        color = parameters.color[i]
+        canvas = render_stroke(stroke=stroke, color=color, canvas=canvas)
+        loss += loss_fn(canvas.unsqueeze(0), target.unsqueeze(0))
+
+    loss = loss / n_strokes
+
+    return (canvas.detach(), loss)
+
+
+def render_timelapse_frames(
+    canvas: torch.Tensor, parameters: StrokeParameters, output_path: Path
+) -> torch.Tensor:
+    output_path = Path(output_path)
+    if output_path.exists():
+        shutil.rmtree(output_path)
+    output_path.mkdir()
+
+    with torch.no_grad():
+        strokes = calculate_strokes(
+            canvas, parameters, n_strokes=parameters.n_strokes)
+
         height, width = canvas.shape[-2:]
 
-        w = torch.linspace(0, width - 1, width, device=canvas.device) / height
-        h = torch.linspace(0, height - 1, height, device=canvas.device) / height
+        for i, (stroke, color, center_x, center_y) in enumerate(
+            zip(strokes, parameters.color,
+                parameters.center_x, parameters.center_y)
+        ):
+            canvas = render_stroke(stroke=stroke, color=color, canvas=canvas)
 
-        x, y = torch.meshgrid(w, h, indexing="xy")
+            to_save = canvas.clone().cpu()
 
-        # Reshape coordinates into a list of XY pairs, then duplicate it
-        # once for each stroke in the group
-        cartesian_coordinates = torch.stack([x, y], dim=0).view(1, 2, -1)
-        cartesian_coordinates = cartesian_coordinates.repeat(
-            len(parameters.alpha), 1, 1
-        )  # (1 x 2 x M) -> (N x 2 x M)
+            # center_x = int(center_x * width)
+            # center_y = int(center_y * height)
+            # to_save[
+            #     :,
+            #     max(center_y - 3, 0) : min(center_y + 3, height),
+            #     max(center_x - 3, 0) : min(center_x + 3, width),
+            # ] = torch.tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
 
-        return cartesian_coordinates
-
-    def evaluate_pdf(
-        self, cartesian_coordinates: torch.Tensor, parameters: StrokeParameters
-    ) -> torch.Tensor:
-        n_strokes = len(parameters.alpha)
-
-        cos_rot = torch.cos(parameters.rotation)
-        sin_rot = torch.sin(parameters.rotation)
-
-        # Offset coordinates to change where the center of the
-        # polar coordinates is placed
-        offset_x = parameters.center_x - (cos_rot * parameters.mu_r)
-        # the direction of the y-axis is inverted, so we add rather than subtract
-        offset_y = parameters.center_y + (sin_rot * parameters.mu_r)
-        cartesian_offset = torch.stack(
-            [offset_x, offset_y], dim=1
-        )  # 2x (N x 1) -> (N x 2 x 1)
-        cartesian_coordinates = cartesian_coordinates - cartesian_offset
-
-        rotation_matrices = torch.cat([cos_rot, -sin_rot, sin_rot, cos_rot], dim=-1)
-        rotation_matrices = rotation_matrices.view(n_strokes, 2, 2)
-        cartesian_coordinates = torch.bmm(rotation_matrices, cartesian_coordinates)
-
-        # Convert to polar coordinates and apply polar-space offsets
-        r = torch.linalg.norm(cartesian_coordinates, dim=1)  # (N x 2 x M) -> (N x M)
-        r = r - parameters.mu_r
-
-        theta = torch.atan2(
-            cartesian_coordinates[:, 1] + self.epsilon,
-            cartesian_coordinates[:, 0] + self.epsilon,
-        )  # -> (N x M), ranges from -pi to pi
-
-        # Simplified Gaussian PDF function:
-        # e ^ (
-        #    -1
-        #     * (
-        #         ((x - mu_x) ^ 2 / (2 * sigma_x ^ 2))
-        #         + ((y - mu_y) ^ 2 / (2 * sigma_y ^ 2))
-        #     )
-        # )
-
-        r = torch.square(r)
-        theta = torch.square(theta)
-
-        # sigma_r is expressed as a fraction of the radius instead of
-        # an absolute quantity
-        sigma_r = parameters.sigma_r * parameters.mu_r
-        sigmas = torch.stack([sigma_r, parameters.sigma_theta], dim=1).view(
-            n_strokes, 2, 1
-        )
-
-        polar_coordinates = torch.stack([r, theta], dim=1)
-        polar_coordinates = polar_coordinates / (
-            2 * torch.square(sigmas) + self.epsilon
-        )
-        pdf = torch.exp(-1 * torch.sum(polar_coordinates, dim=1))
-
-        return pdf
-
-    def calculate_strokes(
-        self, canvas: torch.Tensor, parameters: StrokeParameters
-    ) -> torch.Tensor:
-        height, width = canvas.shape[-2:]
-        centers = torch.stack(
-            [parameters.center_x, parameters.center_y], dim=1
-        )  # (N x 2 x 1)
-
-        stroke_maxes = self.evaluate_pdf(
-            cartesian_coordinates=centers, parameters=parameters
-        )  # (N x 1)
-
-        coordinates = self.make_coordinates(
-            canvas=canvas, parameters=parameters
-        )  # (N x 2 x M)
-
-        strokes = self.evaluate_pdf(
-            cartesian_coordinates=coordinates, parameters=parameters
-        )  # (N x M)
-
-        strokes = strokes / (stroke_maxes + self.epsilon)
-        strokes = strokes.view(len(parameters.alpha), 1, height, width)
-        strokes = strokes * parameters.alpha
-
-        return strokes
-
-    def render_stroke(
-        self, stroke: torch.Tensor, color: torch.Tensor, canvas: torch.Tensor
-    ) -> torch.Tensor:
-        # Use the stroke as an alpha to blend between the canvas and a color
-        canvas = ((torch.ones_like(stroke) - stroke) * canvas) + (stroke * color)
-        # Clamp canvas to valid RGB color space.
-        canvas = canvas.clamp(0, 1)
+            T.functional.to_pil_image(to_save).save(
+                output_path / f"{i:05}.jpg")
 
         return canvas
-
-    def forward(
-        self, canvas: torch.Tensor, parameters: StrokeParameters, target: torch.Tensor
-    ) -> torch.Tensor:
-        strokes = self.calculate_strokes(canvas, parameters)
-
-        loss = 0
-        for stroke, color in zip(strokes, parameters.color):
-            canvas = self.render_stroke(stroke=stroke, color=color, canvas=canvas)
-            loss += self.loss_fn(canvas.unsqueeze(0), target.unsqueeze(0))
-
-        loss = loss / len(strokes)
-
-        return canvas.detach(), loss
-
-    def render_timelapse_frames(
-        self, canvas: torch.Tensor, parameters: StrokeParameters, output_path: Path
-    ) -> torch.Tensor:
-        output_path = Path(output_path)
-        if output_path.exists():
-            shutil.rmtree(output_path)
-        output_path.mkdir()
-
-        with torch.no_grad():
-            strokes = self.calculate_strokes(canvas, parameters)
-
-            height, width = canvas.shape[-2:]
-
-            for i, (stroke, color, center_x, center_y) in enumerate(
-                zip(strokes, parameters.color, parameters.center_x, parameters.center_y)
-            ):
-                canvas = self.render_stroke(stroke=stroke, color=color, canvas=canvas)
-
-                center_x = int(center_x * width)
-                center_y = int(center_y * height)
-
-                to_save = canvas.clone().cpu()
-                # to_save[
-                #     :,
-                #     max(center_y - 3, 0) : min(center_y + 3, height),
-                #     max(center_x - 3, 0) : min(center_x + 3, width),
-                # ] = torch.tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
-
-                T.functional.to_pil_image(to_save).save(output_path / f"{i:05}.jpg")
-
-            return canvas
 
 
 def optimize(
@@ -335,8 +351,6 @@ def optimize(
 
     canvas = torch.zeros_like(target)
 
-    renderer = Renderer().to(device)
-
     frozen_params: StrokeParameters = None
 
     output_path = Path("optimization_timelapse_frames")
@@ -345,12 +359,13 @@ def optimize(
     output_path.mkdir()
 
     loss = 0.0
+    mae = 1.0
 
     loss_history = []
     mae_history = []
 
     outer_pbar = tqdm(range(n_groups))
-    outer_pbar.set_description(f"Loss = 0.0 | Optimizing Stroke Group: 1 of {n_groups}")
+    outer_pbar.set_description(f"Loss=?, MAE=? | Group 1/{n_groups}")
 
     for i in outer_pbar:
         active_params = StrokeParameters(
@@ -374,7 +389,12 @@ def optimize(
             inner_iterator = range(iterations)
 
         for j in inner_iterator:
-            result, loss = renderer(canvas, active_params, target)
+            result, loss = render(
+                canvas=canvas,
+                parameters=active_params,
+                target=target,
+                n_strokes=n_strokes_per_group,
+            )
 
             loss.backward()
 
@@ -384,24 +404,33 @@ def optimize(
 
             active_params.clamp_parameters()
 
+            mae = torch.mean(torch.abs(result - target))
+
             if show_inner_pbar:
-                description = f"Loss = {loss:.5f} "
+                description = f"Loss={loss:.5f}, MAE={mae:.5f}"
                 inner_iterator.set_description(description)
 
-            if j % log_every == 0:
+            if log_every is not None and j % log_every == 0:
                 T.functional.to_pil_image(result).save(
                     output_path / f"{i:05}_{j:06}.jpg"
                 )
 
             loss_history.append(loss.detach().cpu().item())
+            mae_history.append(mae.detach().cpu().item())
 
-        canvas, _ = renderer(canvas, active_params, target)
+        canvas, _ = render(
+            canvas=canvas,
+            parameters=active_params,
+            target=target,
+            n_strokes=n_strokes_per_group,
+        )
         if i == 0:
             frozen_params = active_params
         else:
-            frozen_params = concat_stroke_parameters([frozen_params, active_params])
+            frozen_params = concat_stroke_parameters(
+                [frozen_params, active_params])
 
         outer_pbar.set_description(
-            f"Loss = {loss:.5f} | Optimizing Stroke Group: {i+1} of {n_groups}"
+            f"Loss={loss:.5f}, MAE={mae:.5f} | Group {i+1}/{n_groups}"
         )
-    return frozen_params, renderer, loss_history, mae_history
+    return frozen_params, loss_history, mae_history

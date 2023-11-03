@@ -5,7 +5,7 @@ import torch
 import torchvision.transforms as T
 from PIL import Image
 
-from painterbot import optimize
+from painterbot import optimize, render_timelapse_frames
 
 device = "cuda:0"
 image_size = 512
@@ -24,22 +24,23 @@ target = target.to(device)
 target = target / 255
 
 n_groups = 10
-n_strokes_per_group = 50
-iterations = 300
+n_strokes_per_group = 10
+iterations = 100
 
-params, renderer, loss_history, mae_history = optimize(
+params, loss_history, mae_history = optimize(
     target,
     n_groups=n_groups,
     n_strokes_per_group=n_strokes_per_group,
     iterations=iterations,
     show_inner_pbar=True,
     error_map_temperature=1.0,
+    log_every=None,
 )
 
 canvas = torch.zeros(3, 512, 512, device=device)
-result = renderer.render_timelapse_frames(
-    canvas, params, Path("painting_timelapse_frames")
-)
+result = render_timelapse_frames(canvas, params, Path("painting_timelapse_frames"))
+
+T.functional.to_pil_image(result).save("result.jpg")
 
 # run script to convert frames to video
 os.system("./make_timelapses.sh")
