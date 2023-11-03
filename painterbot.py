@@ -1,4 +1,5 @@
 # +
+import torch._dynamo as dynamo
 import shutil
 from pathlib import Path
 from typing import List, Tuple
@@ -63,7 +64,7 @@ class StrokeParameters(nn.Module):
         # obvious perfect circles showing up in the painting
         self.sigma_theta.data.clamp_(0.001, torch.pi / 4)
 
-        self.alpha.data.clamp_(0.1, 1)
+        self.alpha.data.clamp_(0.01, 1)
         self.color.data.clamp_(0, 1)
 
     def smart_init(
@@ -358,9 +359,6 @@ def optimize(
         shutil.rmtree(output_path)
     output_path.mkdir()
 
-    loss = 0.0
-    mae = 1.0
-
     loss_history = []
     mae_history = []
 
@@ -429,6 +427,8 @@ def optimize(
         else:
             frozen_params = concat_stroke_parameters(
                 [frozen_params, active_params])
+
+        print(len(frozen_params.alpha), frozen_params.n_strokes)
 
         outer_pbar.set_description(
             f"Loss={loss:.5f}, MAE={mae:.5f} | Group {i+1}/{n_groups}"

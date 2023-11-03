@@ -23,9 +23,9 @@ target = preprocessing(target)
 target = target.to(device)
 target = target / 255
 
-n_groups = 10
-n_strokes_per_group = 10
-iterations = 100
+n_groups = 5
+n_strokes_per_group = 50
+iterations = 300
 
 params, loss_history, mae_history = optimize(
     target,
@@ -34,11 +34,12 @@ params, loss_history, mae_history = optimize(
     iterations=iterations,
     show_inner_pbar=True,
     error_map_temperature=1.0,
-    log_every=None,
+    log_every=30,
 )
 
 canvas = torch.zeros(3, 512, 512, device=device)
-result = render_timelapse_frames(canvas, params, Path("painting_timelapse_frames"))
+result = render_timelapse_frames(
+    canvas, params, Path("painting_timelapse_frames"))
 
 T.functional.to_pil_image(result).save("result.jpg")
 
