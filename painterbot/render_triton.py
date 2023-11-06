@@ -4,7 +4,7 @@ import triton.language as tl
 
 from .painterbot import StrokeParameters
 
-BLOCK_SIZE = 512
+BLOCK_SIZE = 128
 
 
 @triton.jit
@@ -19,24 +19,29 @@ def _pdf_forwards(
     color_ptr,
     alpha_ptr,
     maxes_ptr,
-    N_STROKES: tl.constexpr,
+    N_STROKES: int,
+    N_COORDINATES: int,
     BLOCK_SIZE: tl.constexpr,
 ):
-    pid = tl.program_id(0)
+    stroke_id = tl.program_id(0)
+    block_id = tl.program_id(1)
+
+    start_ptr = (
+        coordinates_ptr + (stroke_id * N_COORDINATES * 2) + (block_id * BLOCK_SIZE * 2)
+    )
+    x_coordinate_offsets = tl.arange(0, BLOCK_SIZE * 2, 2)
+    y_coordinate_offsets = x_coordinate_offsets + 1
+    x_coordinate_pointers = start_ptr + x_coordinate_offsets
+    y_coordinate_pointers = start_ptr + y_coordinate_offsets
 
 
 def triton_pdf_forwards(
-    canvas: torch.Tensor,
+    coordinates: torch.Tensor,
     params: StrokeParameters,
-    target: torch.Tensor,
-    n_strokes: int,
 ) -> torch.Tensor:
-    assert (
-        canvas.is_cuda and target.is_cuda and params.alpha.is_cuda
-    ), "all tensors must be on cuda"
+    assert coordinates.is_cuda and params.alpha.is_cuda, "all tensors must be on cuda"
 
-    canvas = canvas.contiguous()
-    target = target.contiguous()
+    coordinates = coordinates.contiguous()
     center_x = params.center_x.contiguous()
     center_y = params.center_y.contiguous()
     rotation = params.rotation.contiguous()
@@ -46,10 +51,9 @@ def triton_pdf_forwards(
     color = params.color.contiguous()
     alpha = params.alpha.contiguous()
 
-    image_shape = target.shape
+    n_strokes, _, n_coordinates = coordinates.shape
 
-    canvas = canvas.view(-1)
-    target = target.view(-1)
+    coordinates = coordinates.view(-1)
     center_x = center_x.view(-1)
     center_y = center_y.view(-1)
     rotation = rotation.view(-1)
@@ -59,4 +63,28 @@ def triton_pdf_forwards(
     color = color.view(-1)
     alpha = alpha.view(-1)
 
-    canvas_output = torch.empty_like(canvas)
+    output = torch.empty(n_strokes, 1, n_coordinates, device=coordinates.device)
+    output = output.view(-1)
+
+    grid = (
+        n_strokes,
+        triton.cdiv(n_coordinates, BLOCK_SIZE),
+    )
+
+    _pdf_forwards[grid](
+        coordinates_ptr=coordinates,
+        center_x_ptr=center_x,
+        center_y_ptr=center_y,
+        rotation_ptr=rotation,
+        mu_r_ptr=mu_r,
+        sigma_r_ptr=sigma_r,
+        sigma_theta_ptr=sigma_theta,
+        color_ptr=color,
+        alpha_ptr=alpha,
+        maxes_ptr=output,
+        N_STROKES=n_strokes,
+        N_COORDINATES=n_coordinates,
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
+
+    output = output.view(n_strokes, 1, n_coordinates)

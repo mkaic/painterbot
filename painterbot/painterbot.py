@@ -205,12 +205,11 @@ def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return torch.mean(torch.abs(x - y))
 
 
-def make_coordinates(canvas: torch.Tensor, n_strokes: int) -> torch.Tensor:
-    # Aspect ratio should always be >1:1, never 1:<1
-    height, width = canvas.shape[-2:]
-
-    w = torch.linspace(0, width - 1, width, device=canvas.device) / height
-    h = torch.linspace(0, height - 1, height, device=canvas.device) / height
+def make_coordinates(
+    height: int, width: int, n_strokes: int, device: torch.device
+) -> torch.Tensor:
+    w = torch.linspace(0, width - 1, width, device=device) / height
+    h = torch.linspace(0, height - 1, height, device=device) / height
 
     x, y = torch.meshgrid(w, h, indexing="xy")
 
@@ -295,8 +294,10 @@ def calculate_strokes(
     )  # (N x 1)
 
     coordinates = make_coordinates(
-        canvas=canvas,
+        height=height,
+        width=width,
         n_strokes=n_strokes,
+        device=canvas.device,
     )  # (N x 2 x M)
 
     strokes = evaluate_pdf(
