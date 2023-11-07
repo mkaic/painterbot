@@ -5,7 +5,7 @@ import torch
 import torchvision.transforms as T
 from PIL import Image
 
-from .painterbot import optimize, render_timelapse_frames, StrokeParameters
+from .painterbot import optimize, render_timelapse_frames
 
 device = "cuda:0"
 image_size = 512
@@ -38,7 +38,8 @@ params, loss_history, mae_history = optimize(
 )
 
 canvas = torch.zeros(3, 512, 512, device=device)
-result = render_timelapse_frames(canvas, params, Path("painting_timelapse_frames"))
+result = render_timelapse_frames(
+    canvas, params, Path("timelapse_frames_painting"))
 
 T.functional.to_pil_image(result).save("result.jpg")
 
@@ -55,11 +56,3 @@ params.save(
     saved_params
     / f"{image_path.stem}_{n_groups}_{n_strokes_per_group}_{iterations}.pt",
 )
-
-# +
-# 0.03159 for direct optimization of MAE. WAY faster than using MSSIM. 10 groups of 50, 200 iterations
-# 0.03218 achieved by swapping MAE for MSE. okay, back to MAE
-# 0.03178 achieved by going for 5 groups of 100 strokes instead of 10 groups of 50
-# 0.03228 achieved with 1 group of 500 strokes
-# 0.03193 achieved with 500 groups of 1 stroke
-# -

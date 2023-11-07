@@ -1,8 +1,8 @@
 *_frames
 *mixture*.py
 *ipynb*
-optimization_timelapse.mp4
-painting_timelapse.mp4
+*.mp4
+*.jpg
 saved_params
 __pycache__
 .DS_Store

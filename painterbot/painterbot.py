@@ -22,7 +22,8 @@ class StrokeParameters(nn.Module):
             "width_to_height_ratio", torch.tensor(width_to_height_ratio)
         )
 
-        self.center_x = torch.ones(n_strokes, 1) * self.width_to_height_ratio * 0.5
+        self.center_x = torch.ones(n_strokes, 1) * \
+            self.width_to_height_ratio * 0.5
         self.center_x = nn.Parameter(self.center_x)
 
         self.center_y = torch.ones(n_strokes, 1) * 0.5
@@ -72,7 +73,8 @@ class StrokeParameters(nn.Module):
         device = target.device
         height, width = target.shape[-2:]
 
-        error_map = torch.mean(torch.abs(target - canvas), dim=0)  # (3, H, W) -> (H, W)
+        error_map = torch.mean(torch.abs(target - canvas),
+                               dim=0)  # (3, H, W) -> (H, W)
 
         # Unravel the error map, then softmax to get probability distribution over
         # the pixel locations, then sample from it
@@ -84,7 +86,8 @@ class StrokeParameters(nn.Module):
 
         coordinates = torch.multinomial(flat_error_pdf, n_samples)  # (N, 1)
 
-        new_coords = torch.zeros(2, len(coordinates), dtype=torch.long, device=device)
+        new_coords = torch.zeros(
+            2, len(coordinates), dtype=torch.long, device=device)
 
         # x coordinates (which column the flat index is in)
         # are found by moduloing it by the length of a row
@@ -92,7 +95,8 @@ class StrokeParameters(nn.Module):
 
         # y coordinates (which row the flat index is in) are
         # found by integer-dividing it by the length of a column
-        new_coords[1, :] = torch.div(coordinates, height, rounding_mode="floor")
+        new_coords[1, :] = torch.div(
+            coordinates, height, rounding_mode="floor")
 
         coordinates = new_coords.unsqueeze(-1)  # (N, 1) -> (2, N, 1)
 
@@ -206,21 +210,14 @@ def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 
 
 def make_coordinates(
-    height: int, width: int, n_strokes: int, device: torch.device
+    height: int, width: int, device: torch.device
 ) -> torch.Tensor:
     w = torch.linspace(0, width - 1, width, device=device) / height
     h = torch.linspace(0, height - 1, height, device=device) / height
 
-    x, y = torch.meshgrid(w, h, indexing="xy")
+    x, y = torch.cartesian_prod(w, h).permute(1, 0)  # (HW)
 
-    # Reshape coordinates into a list of XY pairs, then duplicate it
-    # once for each stroke in the group
-    cartesian_coordinates = torch.stack([x, y], dim=0).view(1, 2, -1)
-    cartesian_coordinates = cartesian_coordinates.repeat(
-        n_strokes, 1, 1
-    )  # (1 x 2 x M) -> (N x 2 x M)
-
-    return cartesian_coordinates
+    return x, y
 
 
 def evaluate_pdf(
@@ -241,19 +238,20 @@ def evaluate_pdf(
     )  # 2x (N x 1) -> (N x 2 x 1)
     cartesian_coordinates = cartesian_coordinates - cartesian_offset
 
-    rotation_matrices = torch.cat([cos_rot, -sin_rot, sin_rot, cos_rot], dim=-1)
+    rotation_matrices = torch.cat(
+        [cos_rot, -sin_rot, sin_rot, cos_rot], dim=-1)
     rotation_matrices = rotation_matrices.view(n_strokes, 2, 2)
     cartesian_coordinates = torch.bmm(rotation_matrices, cartesian_coordinates)
 
     # Convert to polar coordinates and apply polar-space offsets
-    # (N x 2 x M) -> (N x M)
+    # (N x 2 x HW) -> (N x HW)
     r = torch.linalg.norm(cartesian_coordinates, dim=1)
     r = r - parameters.mu_r
 
     theta = torch.atan2(
         cartesian_coordinates[:, 1] + EPSILON,
         cartesian_coordinates[:, 0] + EPSILON,
-    )  # -> (N x M), ranges from -pi to pi
+    )  # -> (N x HW), ranges from -pi to pi
 
     # Simplified Gaussian PDF function:
     # e ^ (
@@ -270,10 +268,12 @@ def evaluate_pdf(
     # sigma_r is expressed as a fraction of the radius instead of
     # an absolute quantity
     sigma_r = parameters.sigma_r * parameters.mu_r
-    sigmas = torch.stack([sigma_r, parameters.sigma_theta], dim=1).view(n_strokes, 2, 1)
+    sigmas = torch.stack([sigma_r, parameters.sigma_theta],
+                         dim=1).view(n_strokes, 2, 1)
 
     polar_coordinates = torch.stack([r, theta], dim=1)
-    polar_coordinates = polar_coordinates / (2 * torch.square(sigmas) + EPSILON)
+    polar_coordinates = polar_coordinates / \
+        (2 * torch.square(sigmas) + EPSILON)
     pdf = torch.exp(-1 * torch.sum(polar_coordinates, dim=1))
 
     return pdf
@@ -293,16 +293,19 @@ def calculate_strokes(
         cartesian_coordinates=centers, parameters=parameters, n_strokes=n_strokes
     )  # (N x 1)
 
-    coordinates = make_coordinates(
+    x, y = make_coordinates(
         height=height,
         width=width,
-        n_strokes=n_strokes,
         device=canvas.device,
-    )  # (N x 2 x M)
+    )  # (HW)
+
+    coordinates = torch.stack([x, y], dim=0)  # (2 x HW)
+    coordinates = coordinates.unsqueeze(0)  # (1 x 2 x HW)
+    coordinates = coordinates.repeat(n_strokes, 1, 1)  # (N x 2 x HW
 
     strokes = evaluate_pdf(
         cartesian_coordinates=coordinates, parameters=parameters, n_strokes=n_strokes
-    )  # (N x M)
+    )  # (N x HW)
 
     strokes = strokes / (stroke_maxes + EPSILON)
     strokes = strokes.view(n_strokes, 1, height, width)
@@ -329,7 +332,9 @@ def render(
 ) -> Tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
     n_strokes = parameters.n_strokes
 
-    strokes = calculate_strokes(canvas, parameters, n_strokes=n_strokes)
+    strokes = calculate_strokes(
+        canvas=canvas, parameters=parameters, n_strokes=n_strokes
+    )
 
     loss = 0
     for i in range(n_strokes):
@@ -357,12 +362,15 @@ def render_timelapse_frames(
     output_path.mkdir()
 
     with torch.no_grad():
-        strokes = calculate_strokes(canvas, parameters, n_strokes=parameters.n_strokes)
+        strokes = calculate_strokes(
+            canvas=canvas, parameters=parameters, n_strokes=parameters.n_strokes
+        )
 
         height, width = canvas.shape[-2:]
 
         for i, (stroke, color, center_x, center_y) in enumerate(
-            zip(strokes, parameters.color, parameters.center_x, parameters.center_y)
+            zip(strokes, parameters.color,
+                parameters.center_x, parameters.center_y)
         ):
             canvas = render_stroke(stroke=stroke, color=color, canvas=canvas)
 
@@ -376,7 +384,8 @@ def render_timelapse_frames(
             #     max(center_x - 3, 0) : min(center_x + 3, width),
             # ] = torch.tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
 
-            T.functional.to_pil_image(to_save).save(output_path / f"{i:05}.jpg")
+            T.functional.to_pil_image(to_save).save(
+                output_path / f"{i:05}.jpg")
 
         return canvas
 
@@ -402,7 +411,7 @@ def optimize(
 
     frozen_params: StrokeParameters = None
 
-    output_path = Path("optimization_timelapse_frames")
+    output_path = Path("timelapse_frames_optimization")
     if output_path.exists():
         shutil.rmtree(output_path)
     output_path.mkdir()
@@ -471,7 +480,8 @@ def optimize(
         if i == 0:
             frozen_params = active_params
         else:
-            frozen_params = concat_stroke_parameters([frozen_params, active_params])
+            frozen_params = concat_stroke_parameters(
+                [frozen_params, active_params])
 
         print(len(frozen_params.alpha), frozen_params.n_strokes)
 
