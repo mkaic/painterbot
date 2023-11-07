@@ -24,8 +24,8 @@ target = target.to(device)
 target = target / 255
 
 n_groups = 5
-n_strokes_per_group = 50
-iterations = 300
+n_strokes_per_group = 10
+iterations = 100
 
 params, loss_history, mae_history = optimize(
     target,
@@ -38,13 +38,12 @@ params, loss_history, mae_history = optimize(
 )
 
 canvas = torch.zeros(3, 512, 512, device=device)
-result = render_timelapse_frames(
-    canvas, params, Path("timelapse_frames_painting"))
+result = render_timelapse_frames(canvas, params, Path("timelapse_frames_painting"))
 
 T.functional.to_pil_image(result).save("result.jpg")
 
 # run script to convert frames to video
-os.system("./painterbot/make_timelapses.sh")
+os.system("./make_timelapses.sh")
 
 params = params.cpu()
 
