@@ -22,7 +22,12 @@ This project was inspired by [3D Gaussian Splatting](https://repo-sam.inria.fr/f
 I've been developing from inside the [latest PyTorch Docker container from Nvidia (23.10-py3 at the time of writing)](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch/tags) using VSCode.
 
 ```
-docker run -it -d --gpus all -v /workspace:/workspace nvcr.io/nvidia/pytorch:23.10-py3
+docker run \
+-it \
+-d \
+--gpus all \
+-v /workspace:/workspace \
+nvcr.io/nvidia/pytorch:23.10-py3
 ```
 
 ## Plans
