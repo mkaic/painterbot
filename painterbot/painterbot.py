@@ -15,15 +15,6 @@ def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return torch.mean(torch.abs(x - y))
 
 
-def make_coordinates(height: int, width: int, device: torch.device) -> torch.Tensor:
-    w = torch.linspace(0, width - 1, width, device=device) / height
-    h = torch.linspace(0, height - 1, height, device=device) / height
-
-    x, y = torch.cartesian_prod(w, h).permute(1, 0)  # (HW)
-
-    return x, y
-
-
 def evaluate_pdf(
     coordinates: torch.Tensor,
     parameters: StrokeParameters,
@@ -44,7 +35,8 @@ def evaluate_pdf(
     )  # 2x (N x 1) -> (N x 2 x 1)
     coordinates = coordinates - cartesian_offset
 
-    rotation_matrices = torch.cat([cos_rot, -sin_rot, sin_rot, cos_rot], dim=-1)
+    rotation_matrices = torch.cat(
+        [cos_rot, -sin_rot, sin_rot, cos_rot], dim=-1)
     rotation_matrices = rotation_matrices.view(n_strokes, 2, 2)
     coordinates = torch.bmm(rotation_matrices, coordinates)
 
@@ -73,11 +65,15 @@ def evaluate_pdf(
     # sigma_r is expressed as a fraction of the radius instead of
     # an absolute quantity
     sigma_r = parameters.sigma_r * parameters.mu_r
-    sigmas = torch.stack([sigma_r, parameters.sigma_theta], dim=1).view(n_strokes, 2, 1)
+    sigmas = torch.stack([sigma_r, parameters.sigma_theta],
+                         dim=1).view(n_strokes, 2, 1)
 
     polar_coordinates = torch.stack([r, theta], dim=1)
-    polar_coordinates = polar_coordinates / (2 * torch.square(sigmas) + EPSILON)
+    polar_coordinates = polar_coordinates / \
+        (2 * torch.square(sigmas) + EPSILON)
     pdf = torch.exp(-1 * torch.sum(polar_coordinates, dim=1))
+
+    pdf = pdf * parameters.alpha
 
     return pdf
 
@@ -87,35 +83,29 @@ def calculate_strokes(
     parameters: StrokeParameters,
     n_strokes: int,
     triton: bool = False,
-    EPSILON: float = 1e-8,
 ) -> torch.Tensor:
     height, width = canvas.shape[-2:]
-    centers = torch.stack(
-        [parameters.center_x, parameters.center_y], dim=1
-    )  # (N x 2 x 1)
+    device = canvas.device
+    dtype = canvas.dtype
 
     if triton:
         pdf_func = triton_pdf_forwards
     else:
         pdf_func = evaluate_pdf
 
-    stroke_maxes = pdf_func(coordinates=centers, parameters=parameters)  # (N x 1)
+    w = torch.linspace(0, width - 1, width, device=device,
+                       dtype=dtype) / height
+    h = torch.linspace(0, height - 1, height,
+                       device=device, dtype=dtype) / height
 
-    x, y = make_coordinates(
-        height=height,
-        width=width,
-        device=canvas.device,
-    )  # (HW)
-
-    coordinates = torch.stack([x, y], dim=0)  # (2 x HW)
+    coordinates = torch.cartesian_prod(w, h).permute(1, 0)  # (2 x HW)
     coordinates = coordinates.unsqueeze(0)  # (1 x 2 x HW)
-    coordinates = coordinates.repeat(n_strokes, 1, 1)  # (N x 2 x HW
+    coordinates = coordinates.repeat(n_strokes, 1, 1)  # (N x 2 x HW)
 
-    strokes = pdf_func(coordinates=coordinates, parameters=parameters)  # (N x HW)
+    strokes = pdf_func(coordinates=coordinates,
+                       parameters=parameters)  # (N x HW)
 
-    strokes = strokes / (stroke_maxes + EPSILON)
     strokes = strokes.view(n_strokes, 1, height, width)
-    strokes = strokes * parameters.alpha
 
     return strokes
 
@@ -185,7 +175,8 @@ def render_timelapse_frames(
         height, width = canvas.shape[-2:]
 
         for i, (stroke, color, center_x, center_y) in enumerate(
-            zip(strokes, parameters.color, parameters.center_x, parameters.center_y)
+            zip(strokes, parameters.color,
+                parameters.center_x, parameters.center_y)
         ):
             canvas = render_stroke(stroke=stroke, color=color, canvas=canvas)
 
@@ -199,7 +190,8 @@ def render_timelapse_frames(
             #     max(center_x - 3, 0) : min(center_x + 3, width),
             # ] = torch.tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
 
-            T.functional.to_pil_image(to_save).save(output_path / f"{i:05}.jpg")
+            T.functional.to_pil_image(to_save).save(
+                output_path / f"{i:05}.jpg")
 
         return canvas
 
@@ -297,7 +289,8 @@ def optimize(
         if i == 0:
             frozen_params = active_params
         else:
-            frozen_params = concat_stroke_parameters([frozen_params, active_params])
+            frozen_params = concat_stroke_parameters(
+                [frozen_params, active_params])
 
         print(len(frozen_params.alpha), frozen_params.n_strokes)
 

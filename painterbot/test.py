@@ -15,11 +15,23 @@ def compare(a: torch.Tensor, b: torch.Tensor, path: str):
 
 
 if __name__ == "__main__":
-    device = torch.device("cuda:0")
-    canvas = torch.zeros(3, 256, 256, device=device)
-    parameters = StrokeParameters.from_file(
-        "checkpoints/lisa_5_50_300.pt").to(device)
+    device = torch.device("cuda:1")
+    dtype = torch.float16
+    canvas = torch.zeros(3, 256, 256, device=device, dtype=dtype)
+    parameters = (
+        StrokeParameters.from_file(
+            "checkpoints/lisa_5_10_100.pt").to(device).to(dtype)
+    )
 
-    triton_result = render(canvas=canvas, parameters=parameters, triton=True)
+    print("running PyTorch render")
     torch_result = render(canvas=canvas, parameters=parameters)
-    compare(torch_result, triton_result, "test_result.png")
+    print("running Triton render")
+    try:
+        triton_result = render(
+            canvas=canvas, parameters=parameters, triton=True)
+    except Exception as e:
+        print("Triton render failed")
+        triton_result = torch.zeros_like(torch_result)
+        raise (e)
+    finally:
+        compare(torch_result, triton_result, "test_result.png")

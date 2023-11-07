@@ -17,6 +17,7 @@ def _pdf_forwards(
     mu_r_ptr,
     sigma_r_ptr,
     sigma_theta_ptr,
+    alpha_ptr,
     output_ptr,
     N_COORDINATES: int,
     BLOCK_SIZE: tl.constexpr,
@@ -42,6 +43,7 @@ def _pdf_forwards(
     mu_r = tl.load(mu_r_ptr + stroke_id)
     sigma_r = tl.load(sigma_r_ptr + stroke_id)
     sigma_theta = tl.load(sigma_theta_ptr + stroke_id)
+    alpha = tl.load(alpha_ptr + stroke_id)
 
     cos = tl.cos(rotation)
     sin = tl.sin(rotation)
@@ -73,6 +75,7 @@ def _pdf_forwards(
     theta_coords = theta_coords / (sigma_theta + EPSILON)
 
     pdf = tl.exp(-(r_coords + theta_coords))
+    pdf = pdf * alpha
 
     tl.store(output_ptr + stroke_offset + coord_offsets, pdf, mask=coords_mask)
 
@@ -119,6 +122,8 @@ def triton_pdf_forwards(
         triton.cdiv(n_coordinates, BLOCK_SIZE),
     )
 
+    print(grid)
+
     _pdf_forwards[grid](
         coordinates_x_ptr=x_coordinates,
         coordinates_y_ptr=y_coordinates,
@@ -128,6 +133,7 @@ def triton_pdf_forwards(
         mu_r_ptr=mu_r,
         sigma_r_ptr=sigma_r,
         sigma_theta_ptr=sigma_theta,
+        alpha_ptr=alpha,
         output_ptr=output,
         N_COORDINATES=n_coordinates,
         BLOCK_SIZE=BLOCK_SIZE,

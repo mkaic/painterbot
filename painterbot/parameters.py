@@ -37,7 +37,7 @@ class StrokeParameters(nn.Module):
         self.color = nn.Parameter(self.color)
 
         self.alpha = torch.ones(n_strokes) * 0.01
-        self.alpha = self.alpha.view(n_strokes, 1, 1, 1)
+        self.alpha = self.alpha.view(n_strokes, 1)
         self.alpha = nn.Parameter(self.alpha)
 
     def clamp_parameters(self):
