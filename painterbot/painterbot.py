@@ -325,9 +325,10 @@ def render_stroke(
 def render(
     canvas: torch.Tensor,
     parameters: StrokeParameters,
-    target: torch.Tensor,
-    n_strokes: int,
-) -> torch.Tensor:
+    target: torch.Tensor = None,
+) -> Tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
+    n_strokes = parameters.n_strokes
+
     strokes = calculate_strokes(canvas, parameters, n_strokes=n_strokes)
 
     loss = 0
@@ -335,11 +336,16 @@ def render(
         stroke = strokes[i]
         color = parameters.color[i]
         canvas = render_stroke(stroke=stroke, color=color, canvas=canvas)
-        loss += loss_fn(canvas.unsqueeze(0), target.unsqueeze(0))
+
+        if target is not None:
+            loss += loss_fn(canvas.unsqueeze(0), target.unsqueeze(0))
 
     loss = loss / n_strokes
 
-    return (canvas.detach(), loss)
+    if target is not None:
+        return (canvas.detach(), loss)
+    else:
+        return canvas.detach()
 
 
 def render_timelapse_frames(
@@ -433,7 +439,6 @@ def optimize(
                 canvas=canvas,
                 parameters=active_params,
                 target=target,
-                n_strokes=n_strokes_per_group,
             )
 
             loss.backward()
@@ -462,7 +467,6 @@ def optimize(
             canvas=canvas,
             parameters=active_params,
             target=target,
-            n_strokes=n_strokes_per_group,
         )
         if i == 0:
             frozen_params = active_params

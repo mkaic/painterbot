@@ -6,4 +6,4 @@ painting_timelapse.mp4
 saved_params
 __pycache__
 .DS_Store
-result.jpg
+*result.*
