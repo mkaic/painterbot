@@ -21,7 +21,9 @@ This project was inspired by [3D Gaussian Splatting](https://repo-sam.inria.fr/f
 ## Environment
 I've been developing from inside the [latest PyTorch Docker container from Nvidia (23.10-py3 at the time of writing)](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch/tags) using VSCode.
 
-```docker run -it -d --gpus all -v /workspace:/workspace nvcr.io/nvidia/pytorch:23.10-py3```
+```
+docker run -it -d --gpus all -v /workspace:/workspace nvcr.io/nvidia/pytorch:23.10-py3
+```
 
 ## Plans
 I am currently working on a Triton implementation of the forward and backward pass of my rendering code. My hope is that this implementation will at least match `torch.compile`'s performance, and ideally surpass it. My long-term aim with this project is to get the time required to reconstruct an image with 1000 strokes below 10 seconds. If I can achieve this, it would make it feasible for me to mass-encode large datasets of images like Conceptual 12M or LAION-Art. Then, I plan to train a text-conditional autoregressive sequence model on the encoded images. A true PainterBot!
