@@ -19,9 +19,9 @@ def _pdf_forwards(
     sigma_theta_ptr,
     alpha_ptr,
     output_ptr,
-    N_COORDINATES: int,
+    N_COORDINATES,
     BLOCK_SIZE: tl.constexpr,
-    EPSILON: float = 1e-8,
+    EPSILON,
 ):
     stroke_id = tl.program_id(0)
     block_id = tl.program_id(1)
@@ -29,10 +29,10 @@ def _pdf_forwards(
     stroke_offset = stroke_id * N_COORDINATES
 
     coord_offsets = (block_id * BLOCK_SIZE) + tl.arange(0, BLOCK_SIZE)
+    coords_mask = coord_offsets < N_COORDINATES
+
     x_coord_pointers = coordinates_x_ptr + stroke_offset + coord_offsets
     y_coord_pointers = coordinates_y_ptr + stroke_offset + coord_offsets
-
-    coords_mask = coord_offsets < N_COORDINATES
 
     x_coords = tl.load(x_coord_pointers, mask=coords_mask)
     y_coords = tl.load(y_coord_pointers, mask=coords_mask)
@@ -56,8 +56,8 @@ def _pdf_forwards(
     y_coords = y_coords - offset_y
 
     # rotate coordinates
-    x_coords = (x_coords * cos) - (y_coords * sin)
-    y_coords = (x_coords * sin) + (y_coords * cos)
+    x_coords = (x_coords * cos) - (y_coords * sin) + EPSILON
+    y_coords = (x_coords * sin) + (y_coords * cos) + EPSILON
 
     r_coords = tl.sqrt(x_coords * x_coords + y_coords * y_coords)
     r_coords = r_coords - mu_r
@@ -121,8 +121,6 @@ def triton_pdf_forwards(
         n_strokes,
         triton.cdiv(n_coordinates, BLOCK_SIZE),
     )
-
-    print(grid)
 
     _pdf_forwards[grid](
         coordinates_x_ptr=x_coordinates,
