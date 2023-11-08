@@ -12,7 +12,10 @@ from .parameters import StrokeParameters, concat_stroke_parameters
 
 
 def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    return torch.mean(torch.abs(x - y))
+    # rmse = torch.sqrt(torch.mean(torch.square(x - y)))
+    mae = torch.mean(torch.abs(x - y))
+    # psnr = torch.log10(1 / rmse)
+    return mae
 
 
 def evaluate_pdf(
@@ -30,23 +33,23 @@ def evaluate_pdf(
     offset_x = parameters.center_x - (cos_rot * parameters.mu_r)
     # the direction of the y-axis is inverted, so we add rather than subtract
     offset_y = parameters.center_y + (sin_rot * parameters.mu_r)
-    cartesian_offset = torch.stack(
-        [offset_x, offset_y], dim=1
-    )  # 2x (N x 1) -> (N x 2 x 1)
-    coordinates = coordinates - cartesian_offset
 
-    rotation_matrices = torch.cat([cos_rot, -sin_rot, sin_rot, cos_rot], dim=-1)
-    rotation_matrices = rotation_matrices.view(n_strokes, 2, 2)
-    coordinates = torch.bmm(rotation_matrices, coordinates)
+    x_coordinates, y_coordinates = coordinates[:, 0, :], coordinates[:, 1, :]
+
+    x_coordinates = x_coordinates - offset_x
+    y_coordinates = y_coordinates - offset_y
+
+    x_coordinates = (x_coordinates * cos_rot) - (y_coordinates * sin_rot)
+    y_coordinates = (x_coordinates * sin_rot) + (y_coordinates * cos_rot)
 
     # Convert to polar coordinates and apply polar-space offsets
     # (N x 2 x HW) -> (N x HW)
-    r = torch.linalg.norm(coordinates, dim=1)
+    r = torch.sqrt(torch.square(x_coordinates) + torch.square(y_coordinates))
     r = r - parameters.mu_r
 
     theta = torch.atan2(
-        coordinates[:, 1] + EPSILON,
-        coordinates[:, 0] + EPSILON,
+        y_coordinates + EPSILON,
+        x_coordinates + EPSILON,
     )  # -> (N x HW), ranges from -pi to pi
 
     # Simplified Gaussian PDF function:
@@ -64,11 +67,10 @@ def evaluate_pdf(
     # sigma_r is expressed as a fraction of the radius instead of
     # an absolute quantity
     sigma_r = parameters.sigma_r * parameters.mu_r
-    sigmas = torch.stack([sigma_r, parameters.sigma_theta], dim=1).view(n_strokes, 2, 1)
 
-    polar_coordinates = torch.stack([r, theta], dim=1)
-    polar_coordinates = polar_coordinates / (2 * torch.square(sigmas) + EPSILON)
-    pdf = torch.exp(-1 * torch.sum(polar_coordinates, dim=1))
+    r = r / (2 * torch.square(sigma_r) + EPSILON)
+    theta = theta / (2 * torch.square(parameters.sigma_theta) + EPSILON)
+    pdf = torch.exp(-1 * (r + theta))
 
     pdf = pdf * parameters.alpha
 
@@ -91,14 +93,17 @@ def calculate_strokes(
     else:
         pdf_func = evaluate_pdf
 
-    w = torch.linspace(0, width - 1, width, device=device, dtype=dtype) / height
-    h = torch.linspace(0, height - 1, height, device=device, dtype=dtype) / height
+    w = torch.linspace(0, width - 1, width, device=device,
+                       dtype=dtype) / height
+    h = torch.linspace(0, height - 1, height,
+                       device=device, dtype=dtype) / height
 
     coordinates = torch.cartesian_prod(w, h).permute(1, 0)  # (2 x HW)
     coordinates = coordinates.unsqueeze(0)  # (1 x 2 x HW)
     coordinates = coordinates.repeat(n_strokes, 1, 1)  # (N x 2 x HW)
 
-    strokes = pdf_func(coordinates=coordinates, parameters=parameters)  # (N x HW)
+    strokes = pdf_func(coordinates=coordinates,
+                       parameters=parameters)  # (N x HW)
 
     strokes = strokes.view(n_strokes, 1, height, width)
 
@@ -168,7 +173,8 @@ def render_timelapse_frames(
         height, width = canvas.shape[-2:]
 
         for i, (stroke, color, center_x, center_y) in enumerate(
-            zip(strokes, parameters.color, parameters.center_x, parameters.center_y)
+            zip(strokes, parameters.color,
+                parameters.center_x, parameters.center_y)
         ):
             canvas = render_stroke(stroke=stroke, color=color, canvas=canvas)
 
@@ -182,7 +188,8 @@ def render_timelapse_frames(
             #     max(center_x - 3, 0) : min(center_x + 3, width),
             # ] = torch.tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
 
-            T.functional.to_pil_image(to_save).save(output_path / f"{i:05}.jpg")
+            T.functional.to_pil_image(to_save).save(
+                output_path / f"{i:05}.jpg")
 
         return canvas
 
@@ -280,9 +287,8 @@ def optimize(
         if i == 0:
             frozen_params = active_params
         else:
-            frozen_params = concat_stroke_parameters([frozen_params, active_params])
-
-        print(len(frozen_params.alpha), frozen_params.n_strokes)
+            frozen_params = concat_stroke_parameters(
+                [frozen_params, active_params])
 
         outer_pbar.set_description(
             f"Loss={loss:.5f}, MAE={mae:.5f} | Group {i+1}/{n_groups}"

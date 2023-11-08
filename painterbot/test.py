@@ -33,14 +33,14 @@ if __name__ == "__main__":
 
     print("running PyTorch timelapse")
     torch_timelapse = Path("test_timelapse_torch")
-    _ = render_timelapse_frames(
+    torch_result = render_timelapse_frames(
         canvas=canvas,
         parameters=parameters,
         output_path=torch_timelapse,
     )
     print("running Triton timelapse")
     triton_timelapse = Path("test_timelapse_triton")
-    _ = render_timelapse_frames(
+    triton_result = render_timelapse_frames(
         canvas=canvas,
         parameters=parameters,
         output_path=triton_timelapse,
@@ -59,19 +59,8 @@ if __name__ == "__main__":
     for i, (torch_frame, triton_frame) in enumerate(zip(torch_frames, triton_frames)):
         torch_frame = to_tensor(Image.open(torch_frame))
         triton_frame = to_tensor(Image.open(triton_frame))
-        both_frames = torch.cat([torch_frame, triton_frame], dim=1)
+        both_frames = torch.cat([torch_frame, triton_frame], dim=2)
         both_frames = to_pil_image(both_frames)
         both_frames.save(out / f"{i:05}.jpg")
 
-    print("running PyTorch render")
-    torch_result = render(canvas=canvas, parameters=parameters)
-    print("running Triton render")
-    try:
-        triton_result = render(
-            canvas=canvas, parameters=parameters, triton=True)
-    except Exception as e:
-        print("Triton render failed")
-        triton_result = torch.zeros_like(torch_result)
-        print(e)
-    finally:
-        compare(torch_result, triton_result, "test_result.png")
+    compare(torch_result, triton_result, "test_result.png")

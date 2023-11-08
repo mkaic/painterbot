@@ -4,7 +4,7 @@ import triton.language as tl
 
 from .parameters import StrokeParameters
 
-BLOCK_SIZE = 128
+BLOCK_SIZE = 32
 
 
 @triton.jit
@@ -45,21 +45,21 @@ def _pdf_forwards(
     sigma_theta = tl.load(sigma_theta_ptr + stroke_id)
     alpha = tl.load(alpha_ptr + stroke_id)
 
-    cos = tl.cos(rotation)
-    sin = tl.sin(rotation)
+    cos_rot = tl.math.cos(rotation)
+    sin_rot = tl.math.sin(rotation)
 
-    offset_x = center_x - (cos * mu_r)
+    offset_x = center_x - (cos_rot * mu_r)
     # the direction of the y-axis is inverted, so we add rather than subtract
-    offset_y = center_y + (sin * mu_r)
+    offset_y = center_y + (sin_rot * mu_r)
 
     x_coords = x_coords - offset_x
     y_coords = y_coords - offset_y
 
     # rotate coordinates
-    x_coords = (x_coords * cos) - (y_coords * sin) + EPSILON
-    y_coords = (x_coords * sin) + (y_coords * cos) + EPSILON
+    x_coords = (x_coords * cos_rot) - (y_coords * sin_rot) + EPSILON
+    y_coords = (x_coords * sin_rot) + (y_coords * cos_rot) + EPSILON
 
-    r_coords = tl.sqrt(x_coords * x_coords + y_coords * y_coords)
+    r_coords = tl.sqrt((x_coords * x_coords) + (y_coords * y_coords))
     r_coords = r_coords - mu_r
     r_coords = r_coords * r_coords
 
@@ -67,14 +67,16 @@ def _pdf_forwards(
     theta_coords = theta_coords * theta_coords
 
     sigma_r = sigma_r * mu_r
-    sigma_r = sigma_r * sigma_r * 2
+    sigma_r = sigma_r * sigma_r * 2.
 
-    sigma_theta = sigma_theta * sigma_theta * 2
+    sigma_theta = sigma_theta * sigma_theta * 2.
 
     r_coords = r_coords / (sigma_r + EPSILON)
     theta_coords = theta_coords / (sigma_theta + EPSILON)
 
-    pdf = tl.exp(-(r_coords + theta_coords))
+    pdf = r_coords + theta_coords
+
+    pdf = tl.math.exp(-1. * pdf)
     pdf = pdf * alpha
 
     tl.store(output_ptr + stroke_offset + coord_offsets, pdf, mask=coords_mask)
@@ -90,29 +92,17 @@ def triton_pdf_forwards(
 
     n_strokes, _, n_coordinates = coordinates.shape
 
-    x_coordinates = coordinates[:, 0]  # (N, 2, HW) -> (N, HW
+    x_coordinates = coordinates[:, 0]  # (N, 2, HW) -> (N, HW)
     y_coordinates = coordinates[:, 1]  # (N, 2, HW) -> (N, HW)
-    x_coordinates = x_coordinates.contiguous()
-    y_coordinates = y_coordinates.contiguous()
-    center_x = parameters.center_x.contiguous()
-    center_y = parameters.center_y.contiguous()
-    rotation = parameters.rotation.contiguous()
-    mu_r = parameters.mu_r.contiguous()
-    sigma_r = parameters.sigma_r.contiguous()
-    sigma_theta = parameters.sigma_theta.contiguous()
-    color = parameters.color.contiguous()
-    alpha = parameters.alpha.contiguous()
-
-    x_coordinates = x_coordinates.view(-1)
-    y_coordinates = y_coordinates.view(-1)
-    center_x = center_x.view(-1)
-    center_y = center_y.view(-1)
-    rotation = rotation.view(-1)
-    mu_r = mu_r.view(-1)
-    sigma_r = sigma_r.view(-1)
-    sigma_theta = sigma_theta.view(-1)
-    color = color.view(-1)
-    alpha = alpha.view(-1)
+    x_coordinates = x_coordinates.contiguous().view(-1)
+    y_coordinates = y_coordinates.contiguous().view(-1)
+    center_x = parameters.center_x.contiguous().view(-1)
+    center_y = parameters.center_y.contiguous().view(-1)
+    rotation = parameters.rotation.contiguous().view(-1)
+    mu_r = parameters.mu_r.contiguous().view(-1)
+    sigma_r = parameters.sigma_r.contiguous().view(-1)
+    sigma_theta = parameters.sigma_theta.contiguous().view(-1)
+    alpha = parameters.alpha.contiguous().view(-1)
 
     output = torch.empty(n_strokes, n_coordinates, device=coordinates.device)
     output = output.view(-1)
