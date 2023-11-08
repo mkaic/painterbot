@@ -5,6 +5,7 @@ import triton.language as tl
 from .parameters import StrokeParameters
 
 BLOCK_SIZE = 32
+EPSILON = (1e-8,)
 
 
 @triton.jit
@@ -21,7 +22,6 @@ def _pdf_forwards(
     output_ptr,
     N_COORDINATES,
     BLOCK_SIZE: tl.constexpr,
-    EPSILON,
 ):
     stroke_id = tl.program_id(0)
     block_id = tl.program_id(1)
@@ -67,28 +67,107 @@ def _pdf_forwards(
     theta_coords = theta_coords * theta_coords
 
     sigma_r = sigma_r * mu_r
-    sigma_r = sigma_r * sigma_r * 2.
+    sigma_r = sigma_r * sigma_r * 2.0
 
-    sigma_theta = sigma_theta * sigma_theta * 2.
+    sigma_theta = sigma_theta * sigma_theta * 2.0
 
     r_coords = r_coords / (sigma_r + EPSILON)
     theta_coords = theta_coords / (sigma_theta + EPSILON)
 
     pdf = r_coords + theta_coords
 
-    pdf = tl.math.exp(-1. * pdf)
+    pdf = tl.math.exp(-1.0 * pdf)
     pdf = pdf * alpha
 
     tl.store(output_ptr + stroke_offset + coord_offsets, pdf, mask=coords_mask)
 
 
-def triton_pdf_forwards(
+@triton.jit
+def _blend_forwards(
+    strokes_ptr,
+    color_ptr,
+    canvas_ptr,
+    N_STROKES,
+    N_COORDINATES,
+    RETURN_LOSS: tl.constexpr,
+    target_ptr=None,
+    loss_ptr=None,
+):
+    pixel_id = tl.program_id(0)
+
+    alpha_map_offsets = (tl.arange(N_STROKES) * N_COORDINATES) + pixel_id
+    alpha_map_pointer_mask = alpha_map_offsets < (N_STROKES * N_COORDINATES)
+    alpha_map_pointers = strokes_ptr + alpha_map_offsets
+    alpha_map_values = tl.load(alpha_map_pointers, mask=alpha_map_pointer_mask)
+
+    red_offsets = (3 * N_COORDINATES) + (pixel_id * 3) + 0
+    red_pointer_mask = red_offsets < (3 * N_COORDINATES)
+    canvas_red_pointers = canvas_ptr + red_offsets
+    canvas_red_value = tl.load(canvas_red_pointers, mask=red_pointer_mask)
+
+    green_offsets = (3 * N_COORDINATES) + (pixel_id * 3) + 1
+    green_pointer_mask = green_offsets < (3 * N_COORDINATES)
+    canvas_green_pointers = canvas_ptr + green_offsets
+    canvas_green_value = tl.load(canvas_green_pointers, mask=green_pointer_mask)
+
+    blue_offsets = (3 * N_COORDINATES) + (pixel_id * 3) + 2
+    blue_pointer_mask = blue_offsets < (3 * N_COORDINATES)
+    canvas_blue_pointers = canvas_ptr + blue_offsets
+    canvas_blue_value = tl.load(canvas_blue_pointers, mask=blue_pointer_mask)
+
+    if RETURN_LOSS:
+        target_red_pointers = target_ptr + red_offsets
+        target_red_value = tl.load(target_red_pointers, mask=red_pointer_mask)
+        target_green_pointers = target_ptr + green_offsets
+        target_green_value = tl.load(target_green_pointers, mask=green_pointer_mask)
+        target_blue_pointers = target_ptr + blue_offsets
+        target_blue_value = tl.load(target_blue_pointers, mask=blue_pointer_mask)
+
+    for stroke_id in range(N_STROKES):
+        color_offsets = (stroke_id * 3) + tl.arange(0, 3)
+        color_pointers = color_ptr + color_offsets
+        stroke_red_value, stroke_green_value, stroke_blue_value = tl.load(
+            color_pointers
+        )
+
+        alpha_map_value = alpha_map_values[stroke_id]
+
+        canvas_red_value = ((1.0 - alpha_map_value) * canvas_red_value) + (
+            alpha_map_value * stroke_red_value
+        )
+        canvas_green_value = ((1.0 - alpha_map_value) * canvas_green_value) + (
+            alpha_map_value * stroke_green_value
+        )
+        canvas_blue_value = ((1.0 - alpha_map_value) * canvas_blue_value) + (
+            alpha_map_value * stroke_blue_value
+        )
+
+        if RETURN_LOSS:
+            stroke_loss_offset = (stroke_id * N_COORDINATES) + pixel_id
+            stroke_loss_pointer = loss_ptr + stroke_loss_offset
+            stroke_loss_value = (
+                tl.abs(canvas_red_value - target_red_value)
+                + tl.abs(canvas_green_value - target_green_value)
+                + tl.abs(canvas_blue_value - target_blue_value)
+            )
+            tl.store(stroke_loss_pointer, stroke_loss_value)
+
+    tl.store(canvas_red_pointers, canvas_red_value, mask=red_pointer_mask)
+    tl.store(canvas_green_pointers, canvas_green_value, mask=green_pointer_mask)
+    tl.store(canvas_blue_pointers, canvas_blue_value, mask=blue_pointer_mask)
+
+
+def triton_render_forward(
     coordinates: torch.Tensor,
     parameters: StrokeParameters,
+    canvas: torch.Tensor,
+    target: torch.Tensor = None,
 ) -> torch.Tensor:
     assert (
         coordinates.is_cuda and parameters.alpha.is_cuda
     ), "all tensors must be on cuda"
+
+    RETURN_LOSS = target is not None
 
     n_strokes, _, n_coordinates = coordinates.shape
 
@@ -104,15 +183,14 @@ def triton_pdf_forwards(
     sigma_theta = parameters.sigma_theta.contiguous().view(-1)
     alpha = parameters.alpha.contiguous().view(-1)
 
-    output = torch.empty(n_strokes, n_coordinates, device=coordinates.device)
-    output = output.view(-1)
+    strokes = torch.empty(n_strokes, n_coordinates, device=coordinates.device).view(-1)
 
-    grid = (
+    pdf_grid = (
         n_strokes,
         triton.cdiv(n_coordinates, BLOCK_SIZE),
     )
 
-    _pdf_forwards[grid](
+    _pdf_forwards[pdf_grid](
         coordinates_x_ptr=x_coordinates,
         coordinates_y_ptr=y_coordinates,
         center_x_ptr=center_x,
@@ -122,11 +200,40 @@ def triton_pdf_forwards(
         sigma_r_ptr=sigma_r,
         sigma_theta_ptr=sigma_theta,
         alpha_ptr=alpha,
-        output_ptr=output,
+        output_ptr=strokes,
         N_COORDINATES=n_coordinates,
         BLOCK_SIZE=BLOCK_SIZE,
-        EPSILON=1e-8,
     )
 
-    output = output.view(n_strokes, 1, n_coordinates)
-    return output
+    canvas_shape = canvas.shape
+    canvas = canvas.contiguous().view(-1)
+    target = target.contiguous().view(-1)
+
+    blend_grid = (n_coordinates,)
+
+    if RETURN_LOSS:
+        loss = torch.empty(n_strokes, n_coordinates, device=coordinates.device).view(-1)
+    else:
+        loss = None
+
+    _blend_forwards[blend_grid](
+        strokes_ptr=strokes,
+        color_ptr=parameters.color,
+        canvas_ptr=canvas,
+        target_ptr=target,
+        loss_ptr=loss,
+        N_STROKES=n_strokes,
+        N_COORDINATES=n_coordinates,
+        RETURN_LOSS=RETURN_LOSS,
+    )
+
+    canvas = canvas.view(canvas_shape)
+
+    if RETURN_LOSS:
+        loss = loss.view(n_strokes, n_coordinates)
+        loss = loss.mean(dim=1)
+
+        return canvas.detach(), loss
+
+    else:
+        return canvas.detach()

@@ -7,8 +7,10 @@ import torch
 import torchvision.transforms as T
 from tqdm.auto import tqdm
 
-from .triton_render_kernel import triton_pdf_forwards
+from .triton_render_kernel import triton_render_forward
 from .parameters import StrokeParameters, concat_stroke_parameters
+
+EPSILON: float = 1e-8
 
 
 def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -21,10 +23,7 @@ def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 def evaluate_pdf(
     coordinates: torch.Tensor,
     parameters: StrokeParameters,
-    EPSILON: float = 1e-8,
 ) -> torch.Tensor:
-    n_strokes = parameters.n_strokes
-
     cos_rot = torch.cos(parameters.rotation)
     sin_rot = torch.sin(parameters.rotation)
 
@@ -80,7 +79,6 @@ def evaluate_pdf(
 def calculate_strokes(
     canvas: torch.Tensor,
     parameters: StrokeParameters,
-    triton: bool = False,
 ) -> torch.Tensor:
     height, width = canvas.shape[-2:]
     device = canvas.device
@@ -88,22 +86,14 @@ def calculate_strokes(
 
     n_strokes = parameters.n_strokes
 
-    if triton:
-        pdf_func = triton_pdf_forwards
-    else:
-        pdf_func = evaluate_pdf
-
-    w = torch.linspace(0, width - 1, width, device=device,
-                       dtype=dtype) / height
-    h = torch.linspace(0, height - 1, height,
-                       device=device, dtype=dtype) / height
+    w = torch.linspace(0, width - 1, width, device=device, dtype=dtype) / height
+    h = torch.linspace(0, height - 1, height, device=device, dtype=dtype) / height
 
     coordinates = torch.cartesian_prod(w, h).permute(1, 0)  # (2 x HW)
     coordinates = coordinates.unsqueeze(0)  # (1 x 2 x HW)
     coordinates = coordinates.repeat(n_strokes, 1, 1)  # (N x 2 x HW)
 
-    strokes = pdf_func(coordinates=coordinates,
-                       parameters=parameters)  # (N x HW)
+    strokes = evaluate_pdf(coordinates=coordinates, parameters=parameters)  # (N x HW)
 
     strokes = strokes.view(n_strokes, 1, height, width)
 
@@ -115,8 +105,6 @@ def render_stroke(
 ) -> Tuple[torch.Tensor]:
     # Use the stroke as an alpha to blend between the canvas and a color
     canvas = ((torch.ones_like(stroke) - stroke) * canvas) + (stroke * color)
-    # Clamp canvas to valid RGB color space.
-    canvas = canvas.clamp(0, 1)
 
     return canvas
 
@@ -125,14 +113,12 @@ def render(
     canvas: torch.Tensor,
     parameters: StrokeParameters,
     target: torch.Tensor = None,
-    triton: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
     n_strokes = parameters.n_strokes
 
     strokes = calculate_strokes(
         canvas=canvas,
         parameters=parameters,
-        triton=triton,
     )
 
     loss = 0
@@ -156,7 +142,7 @@ def render_timelapse_frames(
     canvas: torch.Tensor,
     parameters: StrokeParameters,
     output_path: Path,
-    triton: bool = False,
+    mark_centers: bool = False,
 ) -> torch.Tensor:
     output_path = Path(output_path)
     if output_path.exists():
@@ -167,29 +153,27 @@ def render_timelapse_frames(
         strokes = calculate_strokes(
             canvas=canvas,
             parameters=parameters,
-            triton=triton,
         )
 
         height, width = canvas.shape[-2:]
 
         for i, (stroke, color, center_x, center_y) in enumerate(
-            zip(strokes, parameters.color,
-                parameters.center_x, parameters.center_y)
+            zip(strokes, parameters.color, parameters.center_x, parameters.center_y)
         ):
             canvas = render_stroke(stroke=stroke, color=color, canvas=canvas)
 
             to_save = canvas.clone().cpu()
 
-            # center_x = int(center_x * width)
-            # center_y = int(center_y * height)
-            # to_save[
-            #     :,
-            #     max(center_y - 3, 0) : min(center_y + 3, height),
-            #     max(center_x - 3, 0) : min(center_x + 3, width),
-            # ] = torch.tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
+            if mark_centers:
+                center_x = int(center_x * width)
+                center_y = int(center_y * height)
+                to_save[
+                    :,
+                    max(center_y - 3, 0): min(center_y + 3, height),
+                    max(center_x - 3, 0): min(center_x + 3, width),
+                ] = torch.tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
 
-            T.functional.to_pil_image(to_save).save(
-                output_path / f"{i:05}.jpg")
+            T.functional.to_pil_image(to_save).save(output_path / f"{i:05}.jpg")
 
         return canvas
 
@@ -203,7 +187,6 @@ def optimize(
     show_inner_pbar: bool = True,
     error_map_temperature: float = 1.0,
     log_every: int = 15,
-    triton: bool = False,
 ):
     if n_groups == 1:
         show_inner_pbar = True
@@ -253,7 +236,6 @@ def optimize(
                 canvas=canvas,
                 parameters=active_params,
                 target=target,
-                triton=triton,
             )
 
             loss.backward()
@@ -282,13 +264,11 @@ def optimize(
             canvas=canvas,
             parameters=active_params,
             target=target,
-            triton=triton,
         )
         if i == 0:
             frozen_params = active_params
         else:
-            frozen_params = concat_stroke_parameters(
-                [frozen_params, active_params])
+            frozen_params = concat_stroke_parameters([frozen_params, active_params])
 
         outer_pbar.set_description(
             f"Loss={loss:.5f}, MAE={mae:.5f} | Group {i+1}/{n_groups}"

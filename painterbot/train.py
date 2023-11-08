@@ -37,9 +37,8 @@ params, loss_history, mae_history = optimize(
     log_every=30,
 )
 
-canvas = torch.zeros(3, 512, 512, device=device)
-result = render_timelapse_frames(
-    canvas, params, Path("timelapse_frames_painting"))
+canvas = torch.zeros_like(target, device=device)
+result = render_timelapse_frames(canvas, params, Path("timelapse_frames_painting"))
 
 T.functional.to_pil_image(result).save("result.jpg")
 
