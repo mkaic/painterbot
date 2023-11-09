@@ -110,6 +110,29 @@ def render_stroke(
     return canvas
 
 
+def blend(
+    canvas: torch.Tensor,
+    target: torch.Tensor,
+    strokes: torch.Tensor,
+    parameters: StrokeParameters,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    if target is not None:
+        loss = torch.zeros_like(canvas)
+    else:
+        loss = None
+
+    n_strokes = parameters.n_strokes
+    for i in range(n_strokes):
+        stroke = strokes[i]
+        color = parameters.color[i]
+        canvas = render_stroke(stroke=stroke, color=color, canvas=canvas)
+
+        if target is not None:
+            loss += loss_fn(canvas, target, reduce=False)
+
+    return canvas, loss
+
+
 def render(
     canvas: torch.Tensor,
     parameters: StrokeParameters,
@@ -129,16 +152,12 @@ def render(
         parameters=parameters,
     )
 
-    if target is not None:
-        loss = torch.zeros_like(canvas)
-
-    for i in range(n_strokes):
-        stroke = strokes[i]
-        color = parameters.color[i]
-        canvas = render_stroke(stroke=stroke, color=color, canvas=canvas)
-
-        if target is not None:
-            loss += loss_fn(canvas, target, reduce=False)
+    canvas, loss = blend(
+        canvas=canvas,
+        target=target,
+        strokes=strokes,
+        parameters=parameters,
+    )
 
     if target is not None:
         loss = loss.mean() / n_strokes
@@ -185,8 +204,8 @@ def render_timelapse_frames(
                 center_y = int(center_y * height)
                 to_save[
                     :,
-                    max(center_y - 3, 0): min(center_y + 3, height),
-                    max(center_x - 3, 0): min(center_x + 3, width),
+                    max(center_y - 3, 0) : min(center_y + 3, height),
+                    max(center_x - 3, 0) : min(center_x + 3, width),
                 ] = torch.tensor([1.0, 0.0, 0.0]).view(3, 1, 1)
 
             T.functional.to_pil_image(to_save).save(output_path / f"{i:05}.jpg")

@@ -1,10 +1,10 @@
 from .painterbot import (
     StrokeParameters,
     pdf,
-    render_stroke,
+    blend,
     render,
 )
-from .triton_render_kernel import (
+from .triton_kernels import (
     triton_pdf_forward,
     triton_blend_forward,
     triton_render_forward,
@@ -29,7 +29,7 @@ if __name__ == "__main__":
     torch.cuda.set_device(device.index)
     dtype = torch.float32
     parameters = (
-        StrokeParameters.from_file("checkpoints/lisa_10_50_300.pt").to(device).to(dtype)
+        StrokeParameters.from_file("checkpoints/lisa_16_32_256.pt").to(device).to(dtype)
     )
 
     height, width = 300, 300
@@ -46,6 +46,18 @@ if __name__ == "__main__":
                 parameters=parameters,
             )
         print(f"PyTorch calculate_strokes took {time.time() - start} seconds")
+
+        print("benchmarking PyTorch blend")
+        start = time.time()
+        for i in tqdm(range(100)):
+            canvas = torch.zeros(3, height, width, device=device, dtype=dtype)
+            _ = blend(
+                canvas=canvas,
+                target=None,
+                strokes=strokes,
+                parameters=parameters,
+            )
+        print(f"PyTorch blend took {time.time() - start} seconds")
 
         print("benchmarking triton_pdf_forward")
         start = time.time()
