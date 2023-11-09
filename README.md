@@ -11,13 +11,6 @@ This project was inspired by [3D Gaussian Splatting](https://repo-sam.inria.fr/f
 5. I optimize a group of strokes, freeze them, then add new strokes and repeat.
 6. I can get a pretty good reconstruction with just a few hundred strokes instead of a few million (not really a fair comparison since obviouly I'm solving a much simpler problem, but still)
 
-## Repo structure
-* `painterbot.py` contains all the logic and rendering code. `train.py` is just a convenience script I use to call that code. 
-* `make_timelapses.sh` takes the frames saved during the optimization process and renders two different timelapse videos: one of the finished painting being painted stroke-by-stroke, and one of the strokes coalescing and optimizing themselves during gradient descent.
-* `test.py` loads a small, 250-stroke pre-trained Mona Lisa and renders it with both the python code and (soon) the Triton code.
-
-`triton_render_kernel.py` is where I'm slowly working towards implementing a CUDA kernel for my rendering algorithm using OpenAI's Triton language.
-
 ## Environment
 I've been developing from inside the [latest PyTorch Docker container from Nvidia (23.10-py3 at the time of writing)](https://catalog.ngc.nvidia.com/orgs/nvidia/containers/pytorch/tags) using VSCode.
 
