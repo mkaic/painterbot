@@ -7,17 +7,19 @@ import torch
 import torchvision.transforms as T
 from tqdm.auto import tqdm
 
-from .triton_render_kernel import triton_render_forward
 from .parameters import StrokeParameters, concat_stroke_parameters
 
 EPSILON: float = 1e-8
 
 
-def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    # rmse = torch.sqrt(torch.mean(torch.square(x - y)))
-    mae = torch.mean(torch.abs(x - y))
-    # psnr = torch.log10(1 / rmse)
-    return mae
+def loss_fn(x: torch.Tensor, y: torch.Tensor, reduce=True) -> torch.Tensor:
+    abs_error = torch.abs(x - y)
+
+    if reduce:
+        mae = torch.mean(abs_error)
+        return mae
+    else:
+        return abs_error
 
 
 def evaluate_pdf(
@@ -33,7 +35,7 @@ def evaluate_pdf(
     # the direction of the y-axis is inverted, so we add rather than subtract
     offset_y = parameters.center_y + (sin_rot * parameters.mu_r)
 
-    x_coordinates, y_coordinates = coordinates[:, 0, :], coordinates[:, 1, :]
+    x_coordinates, y_coordinates = coordinates[:, 1, :], coordinates[:, 0, :]
 
     x_coordinates = x_coordinates - offset_x
     y_coordinates = y_coordinates - offset_y
@@ -76,20 +78,19 @@ def evaluate_pdf(
     return pdf
 
 
-def calculate_strokes(
-    canvas: torch.Tensor,
+def pdf(
+    height: int,
+    width: int,
+    device: torch.device,
+    dtype: torch.dtype,
     parameters: StrokeParameters,
 ) -> torch.Tensor:
-    height, width = canvas.shape[-2:]
-    device = canvas.device
-    dtype = canvas.dtype
-
     n_strokes = parameters.n_strokes
 
     w = torch.linspace(0, width - 1, width, device=device, dtype=dtype) / height
     h = torch.linspace(0, height - 1, height, device=device, dtype=dtype) / height
 
-    coordinates = torch.cartesian_prod(w, h).permute(1, 0)  # (2 x HW)
+    coordinates = torch.cartesian_prod(h, w).permute(1, 0)  # (2 x HW)
     coordinates = coordinates.unsqueeze(0)  # (1 x 2 x HW)
     coordinates = coordinates.repeat(n_strokes, 1, 1)  # (N x 2 x HW)
 
@@ -116,23 +117,31 @@ def render(
 ) -> Tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
     n_strokes = parameters.n_strokes
 
-    strokes = calculate_strokes(
-        canvas=canvas,
+    height, width = canvas.shape[-2:]
+    device = canvas.device
+    dtype = canvas.dtype
+
+    strokes = pdf(
+        height=height,
+        width=width,
+        device=device,
+        dtype=dtype,
         parameters=parameters,
     )
 
-    loss = 0
+    if target is not None:
+        loss = torch.zeros_like(canvas)
+
     for i in range(n_strokes):
         stroke = strokes[i]
         color = parameters.color[i]
         canvas = render_stroke(stroke=stroke, color=color, canvas=canvas)
 
         if target is not None:
-            loss += loss_fn(canvas.unsqueeze(0), target.unsqueeze(0))
-
-    loss = loss / n_strokes
+            loss += loss_fn(canvas.unsqueeze(0), target.unsqueeze(0), reduce=False)
 
     if target is not None:
+        loss = loss.mean() / n_strokes
         return (canvas.detach(), loss)
     else:
         return canvas.detach()
@@ -149,9 +158,16 @@ def render_timelapse_frames(
         shutil.rmtree(output_path)
     output_path.mkdir()
 
+    height, width = canvas.shape[-2:]
+    device = canvas.device
+    dtype = canvas.dtype
+
     with torch.no_grad():
-        strokes = calculate_strokes(
-            canvas=canvas,
+        strokes = pdf(
+            height=height,
+            width=width,
+            device=device,
+            dtype=dtype,
             parameters=parameters,
         )
 

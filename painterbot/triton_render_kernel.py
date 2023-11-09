@@ -5,13 +5,11 @@ import triton.language as tl
 from .parameters import StrokeParameters
 
 BLOCK_SIZE = 32
-EPSILON = (1e-8,)
+EPSILON = 1e-8
 
 
 @triton.jit
 def _pdf_forwards(
-    coordinates_x_ptr,
-    coordinates_y_ptr,
     center_x_ptr,
     center_y_ptr,
     rotation_ptr,
@@ -20,22 +18,24 @@ def _pdf_forwards(
     sigma_theta_ptr,
     alpha_ptr,
     output_ptr,
-    N_COORDINATES,
-    BLOCK_SIZE: tl.constexpr,
+    HEIGHT: tl.constexpr,
+    WIDTH: tl.constexpr,
 ):
+    N_COORDINATES = HEIGHT * WIDTH
+
     stroke_id = tl.program_id(0)
-    block_id = tl.program_id(1)
+    row_id = tl.program_id(1)
+    column_id = tl.program_id(2)
 
     stroke_offset = stroke_id * N_COORDINATES
+    row_offset = row_id * WIDTH
+    column_offset = column_id
 
-    coord_offsets = (block_id * BLOCK_SIZE) + tl.arange(0, BLOCK_SIZE)
-    coords_mask = coord_offsets < N_COORDINATES
+    coord_offset = row_offset + column_offset
+    coord_mask = coord_offset < N_COORDINATES
 
-    x_coord_pointers = coordinates_x_ptr + stroke_offset + coord_offsets
-    y_coord_pointers = coordinates_y_ptr + stroke_offset + coord_offsets
-
-    x_coords = tl.load(x_coord_pointers, mask=coords_mask)
-    y_coords = tl.load(y_coord_pointers, mask=coords_mask)
+    x_coord = column_id / HEIGHT
+    y_coord = row_id / HEIGHT
 
     center_x = tl.load(center_x_ptr + stroke_id)
     center_y = tl.load(center_y_ptr + stroke_id)
@@ -52,34 +52,34 @@ def _pdf_forwards(
     # the direction of the y-axis is inverted, so we add rather than subtract
     offset_y = center_y + (sin_rot * mu_r)
 
-    x_coords = x_coords - offset_x
-    y_coords = y_coords - offset_y
+    x_coord = x_coord - offset_x
+    y_coord = y_coord - offset_y
 
     # rotate coordinates
-    x_coords = (x_coords * cos_rot) - (y_coords * sin_rot) + EPSILON
-    y_coords = (x_coords * sin_rot) + (y_coords * cos_rot) + EPSILON
+    x_coord = (x_coord * cos_rot) - (y_coord * sin_rot) + EPSILON
+    y_coord = (x_coord * sin_rot) + (y_coord * cos_rot) + EPSILON
 
-    r_coords = tl.sqrt((x_coords * x_coords) + (y_coords * y_coords))
-    r_coords = r_coords - mu_r
-    r_coords = r_coords * r_coords
+    r_coord = tl.sqrt((x_coord * x_coord) + (y_coord * y_coord))
+    r_coord = r_coord - mu_r
+    r_coord = r_coord * r_coord
 
-    theta_coords = tl.math.atan2(y_coords, x_coords)
-    theta_coords = theta_coords * theta_coords
+    theta_coord = tl.math.atan2(y_coord, x_coord)
+    theta_coord = theta_coord * theta_coord
 
     sigma_r = sigma_r * mu_r
     sigma_r = sigma_r * sigma_r * 2.0
 
     sigma_theta = sigma_theta * sigma_theta * 2.0
 
-    r_coords = r_coords / (sigma_r + EPSILON)
-    theta_coords = theta_coords / (sigma_theta + EPSILON)
+    r_coord = r_coord / (sigma_r + EPSILON)
+    theta_coord = theta_coord / (sigma_theta + EPSILON)
 
-    pdf = r_coords + theta_coords
+    pdf = r_coord + theta_coord
 
     pdf = tl.math.exp(-1.0 * pdf)
     pdf = pdf * alpha
 
-    tl.store(output_ptr + stroke_offset + coord_offsets, pdf, mask=coords_mask)
+    tl.store(output_ptr + stroke_offset + coord_offset, pdf, mask=coord_mask)
 
 
 @triton.jit
@@ -87,33 +87,37 @@ def _blend_forwards(
     strokes_ptr,
     color_ptr,
     canvas_ptr,
-    N_STROKES,
-    N_COORDINATES,
+    target_ptr,
+    loss_ptr,
+    N_STROKES: tl.constexpr,
+    HEIGHT: tl.constexpr,
+    WIDTH: tl.constexpr,
     RETURN_LOSS: tl.constexpr,
-    target_ptr=None,
-    loss_ptr=None,
 ):
-    pixel_id = tl.program_id(0)
+    N_COORDINATES = HEIGHT * WIDTH
 
-    alpha_map_offsets = (tl.arange(N_STROKES) * N_COORDINATES) + pixel_id
-    alpha_map_pointer_mask = alpha_map_offsets < (N_STROKES * N_COORDINATES)
-    alpha_map_pointers = strokes_ptr + alpha_map_offsets
-    alpha_map_values = tl.load(alpha_map_pointers, mask=alpha_map_pointer_mask)
+    row_id = tl.program_id(0)
+    column_id = tl.program_id(1)
 
-    red_offsets = (3 * N_COORDINATES) + (pixel_id * 3) + 0
+    row_offset = row_id * WIDTH
+    column_offset = column_id
+
+    pixel_id = row_offset + column_offset
+
+    red_offsets = pixel_id + (0 * N_COORDINATES)
     red_pointer_mask = red_offsets < (3 * N_COORDINATES)
-    canvas_red_pointers = canvas_ptr + red_offsets
-    canvas_red_value = tl.load(canvas_red_pointers, mask=red_pointer_mask)
+    canvas_red_pointer = canvas_ptr + red_offsets
+    canvas_red_value = tl.load(canvas_red_pointer, mask=red_pointer_mask)
 
-    green_offsets = (3 * N_COORDINATES) + (pixel_id * 3) + 1
+    green_offsets = pixel_id + (1 * N_COORDINATES)
     green_pointer_mask = green_offsets < (3 * N_COORDINATES)
-    canvas_green_pointers = canvas_ptr + green_offsets
-    canvas_green_value = tl.load(canvas_green_pointers, mask=green_pointer_mask)
+    canvas_green_pointer = canvas_ptr + green_offsets
+    canvas_green_value = tl.load(canvas_green_pointer, mask=green_pointer_mask)
 
-    blue_offsets = (3 * N_COORDINATES) + (pixel_id * 3) + 2
+    blue_offsets = pixel_id + (2 * N_COORDINATES)
     blue_pointer_mask = blue_offsets < (3 * N_COORDINATES)
-    canvas_blue_pointers = canvas_ptr + blue_offsets
-    canvas_blue_value = tl.load(canvas_blue_pointers, mask=blue_pointer_mask)
+    canvas_blue_pointer = canvas_ptr + blue_offsets
+    canvas_blue_value = tl.load(canvas_blue_pointer, mask=blue_pointer_mask)
 
     if RETURN_LOSS:
         target_red_pointers = target_ptr + red_offsets
@@ -124,13 +128,19 @@ def _blend_forwards(
         target_blue_value = tl.load(target_blue_pointers, mask=blue_pointer_mask)
 
     for stroke_id in range(N_STROKES):
-        color_offsets = (stroke_id * 3) + tl.arange(0, 3)
-        color_pointers = color_ptr + color_offsets
-        stroke_red_value, stroke_green_value, stroke_blue_value = tl.load(
-            color_pointers
-        )
+        color_offset = stroke_id * 3
+        stroke_red_pointer = color_offset + 0
+        stroke_green_pointer = color_offset + 1
+        stroke_blue_pointer = color_offset + 2
 
-        alpha_map_value = alpha_map_values[stroke_id]
+        stroke_red_value = tl.load(color_ptr + stroke_red_pointer)
+        stroke_green_value = tl.load(color_ptr + stroke_green_pointer)
+        stroke_blue_value = tl.load(color_ptr + stroke_blue_pointer)
+
+        alpha_map_offset = (stroke_id * N_COORDINATES) + pixel_id
+        alpha_map_pointer_mask = alpha_map_offset < (N_STROKES * N_COORDINATES)
+        alpha_map_pointer = strokes_ptr + alpha_map_offset
+        alpha_map_value = tl.load(alpha_map_pointer, mask=alpha_map_pointer_mask)
 
         canvas_red_value = ((1.0 - alpha_map_value) * canvas_red_value) + (
             alpha_map_value * stroke_red_value
@@ -152,47 +162,37 @@ def _blend_forwards(
             )
             tl.store(stroke_loss_pointer, stroke_loss_value)
 
-    tl.store(canvas_red_pointers, canvas_red_value, mask=red_pointer_mask)
-    tl.store(canvas_green_pointers, canvas_green_value, mask=green_pointer_mask)
-    tl.store(canvas_blue_pointers, canvas_blue_value, mask=blue_pointer_mask)
+    tl.store(canvas_red_pointer, canvas_red_value, mask=red_pointer_mask)
+    tl.store(canvas_green_pointer, canvas_green_value, mask=green_pointer_mask)
+    tl.store(canvas_blue_pointer, canvas_blue_value, mask=blue_pointer_mask)
 
 
-def triton_render_forward(
-    coordinates: torch.Tensor,
+def triton_pdf_forward(
     parameters: StrokeParameters,
-    canvas: torch.Tensor,
-    target: torch.Tensor = None,
+    height: int,
+    width: int,
+    device: torch.device,
+    dtype: torch.dtype,
 ) -> torch.Tensor:
-    assert (
-        coordinates.is_cuda and parameters.alpha.is_cuda
-    ), "all tensors must be on cuda"
+    n_strokes = parameters.n_strokes.item()
 
-    RETURN_LOSS = target is not None
+    center_x = parameters.center_x.contiguous()
+    center_y = parameters.center_y.contiguous()
+    rotation = parameters.rotation.contiguous()
+    mu_r = parameters.mu_r.contiguous()
+    sigma_r = parameters.sigma_r.contiguous()
+    sigma_theta = parameters.sigma_theta.contiguous()
+    alpha = parameters.alpha.contiguous()
 
-    n_strokes, _, n_coordinates = coordinates.shape
-
-    x_coordinates = coordinates[:, 0]  # (N, 2, HW) -> (N, HW)
-    y_coordinates = coordinates[:, 1]  # (N, 2, HW) -> (N, HW)
-    x_coordinates = x_coordinates.contiguous().view(-1)
-    y_coordinates = y_coordinates.contiguous().view(-1)
-    center_x = parameters.center_x.contiguous().view(-1)
-    center_y = parameters.center_y.contiguous().view(-1)
-    rotation = parameters.rotation.contiguous().view(-1)
-    mu_r = parameters.mu_r.contiguous().view(-1)
-    sigma_r = parameters.sigma_r.contiguous().view(-1)
-    sigma_theta = parameters.sigma_theta.contiguous().view(-1)
-    alpha = parameters.alpha.contiguous().view(-1)
-
-    strokes = torch.empty(n_strokes, n_coordinates, device=coordinates.device).view(-1)
+    strokes = torch.empty(n_strokes, 1, height, width, device=device, dtype=dtype)
 
     pdf_grid = (
         n_strokes,
-        triton.cdiv(n_coordinates, BLOCK_SIZE),
+        height,
+        width,
     )
 
     _pdf_forwards[pdf_grid](
-        coordinates_x_ptr=x_coordinates,
-        coordinates_y_ptr=y_coordinates,
         center_x_ptr=center_x,
         center_y_ptr=center_y,
         rotation_ptr=rotation,
@@ -201,39 +201,80 @@ def triton_render_forward(
         sigma_theta_ptr=sigma_theta,
         alpha_ptr=alpha,
         output_ptr=strokes,
-        N_COORDINATES=n_coordinates,
-        BLOCK_SIZE=BLOCK_SIZE,
+        HEIGHT=height,
+        WIDTH=width,
     )
 
-    canvas_shape = canvas.shape
-    canvas = canvas.contiguous().view(-1)
-    target = target.contiguous().view(-1)
+    return strokes
 
-    blend_grid = (n_coordinates,)
 
-    if RETURN_LOSS:
-        loss = torch.empty(n_strokes, n_coordinates, device=coordinates.device).view(-1)
+def triton_blend_forward(
+    canvas: torch.Tensor,
+    target: torch.Tensor,
+    strokes: torch.Tensor,
+    parameters: StrokeParameters,
+) -> torch.Tensor:
+    n_strokes = parameters.n_strokes.item()
+    _, height, width = canvas.shape
+    n_coordinates = height * width
+    device = canvas.device
+
+    canvas = canvas.contiguous()
+    strokes = strokes.contiguous()
+    color = parameters.color.contiguous()
+    if target is not None:
+        target = target.contiguous()
+        loss = torch.empty(n_strokes, n_coordinates, device=device)
     else:
         loss = None
 
+    blend_grid = (height, width)
+
     _blend_forwards[blend_grid](
         strokes_ptr=strokes,
-        color_ptr=parameters.color,
+        color_ptr=color,
         canvas_ptr=canvas,
         target_ptr=target,
         loss_ptr=loss,
         N_STROKES=n_strokes,
-        N_COORDINATES=n_coordinates,
-        RETURN_LOSS=RETURN_LOSS,
+        HEIGHT=height,
+        WIDTH=width,
+        RETURN_LOSS=target is not None,
     )
 
-    canvas = canvas.view(canvas_shape)
+    canvas = canvas.view(3, height, width)
+    return canvas, loss
 
-    if RETURN_LOSS:
-        loss = loss.view(n_strokes, n_coordinates)
-        loss = loss.mean(dim=1)
 
-        return canvas.detach(), loss
+def triton_render_forward(
+    parameters: StrokeParameters,
+    canvas: torch.Tensor,
+    target: torch.Tensor = None,
+) -> torch.Tensor:
+    assert parameters.alpha.is_cuda, "parameter tensors must be on cuda"
+    n_strokes = parameters.n_strokes.item()
 
+    height, width = canvas.shape[-2:]
+    device = canvas.device
+    dtype = canvas.dtype
+
+    strokes = triton_pdf_forward(
+        parameters=parameters,
+        height=height,
+        width=width,
+        device=device,
+        dtype=dtype,
+    )
+
+    canvas, loss = triton_blend_forward(
+        canvas=canvas,
+        target=target,
+        strokes=strokes,
+        parameters=parameters,
+    )
+
+    if target is not None:
+        loss = loss.mean() / n_strokes
+        return (canvas.detach(), loss)
     else:
         return canvas.detach()
