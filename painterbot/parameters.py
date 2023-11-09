@@ -57,9 +57,7 @@ class StrokeParameters(nn.Module):
         self.alpha.data.clamp_(0.01, 1)
         self.color.data.clamp_(0, 1)
 
-    def smart_init(
-        self, target: torch.Tensor, canvas: torch.Tensor, temperature: float = 1.0
-    ):
+    def smart_init(self, target: torch.Tensor, canvas: torch.Tensor):
         device = target.device
         height, width = target.shape[-2:]
 
@@ -68,7 +66,7 @@ class StrokeParameters(nn.Module):
         # Unravel the error map, then softmax to get probability distribution over
         # the pixel locations, then sample from it
         flat_error_pdf = nn.functional.softmax(
-            error_map.view(-1) / temperature, dim=0
+            error_map.view(-1), dim=0
         )  # (H, W) -> (H*W)
 
         n_samples = self.n_strokes
@@ -190,3 +188,38 @@ def concat_stroke_parameters(
             concatted.n_strokes += param.n_strokes
 
     return concatted
+
+
+def split_stroke_parameters(
+    parameters: StrokeParameters, block_size: int = 128
+) -> List[StrokeParameters]:
+    n_strokes = parameters.n_strokes.item()
+    n_blocks = n_strokes // block_size
+    n_leftover = n_strokes % block_size
+
+    if n_leftover > 0:
+        n_blocks += 1
+
+    split_parameters = []
+
+    for i in range(n_blocks):
+        start = i * block_size
+        end = start + block_size
+
+        parameter_block = StrokeParameters(
+            n_strokes=block_size,
+            width_to_height_ratio=parameters.width_to_height_ratio.item(),
+        )
+
+        parameter_block.center_x.data = parameters.center_x.data[start:end]
+        parameter_block.center_y.data = parameters.center_y.data[start:end]
+        parameter_block.rotation.data = parameters.rotation.data[start:end]
+        parameter_block.mu_r.data = parameters.mu_r.data[start:end]
+        parameter_block.sigma_r.data = parameters.sigma_r.data[start:end]
+        parameter_block.sigma_theta.data = parameters.sigma_theta.data[start:end]
+        parameter_block.color.data = parameters.color.data[start:end]
+        parameter_block.alpha.data = parameters.alpha.data[start:end]
+
+        split_parameters.append(parameter_block)
+
+    return split_parameters

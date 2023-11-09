@@ -9,7 +9,7 @@ EPSILON = 1e-8
 
 
 @triton.jit
-def _pdf_backwards(
+def _pdf_forward(
     center_x_ptr,
     center_y_ptr,
     rotation_ptr,
@@ -90,16 +90,15 @@ def _pdf_backwards(
 
 
 @triton.jit
-def _blend_backwards(
+def _blend_forward(
     strokes_ptr,
     color_ptr,
     canvas_ptr,
-    target_ptr,
-    loss_ptr,
+    canvas_history_ptr,
     N_STROKES: tl.constexpr,
     HEIGHT: tl.constexpr,
     WIDTH: tl.constexpr,
-    RETURN_LOSS: tl.constexpr,
+    KEEP_HISTORY: tl.constexpr,
 ):
     N_COORDINATES = HEIGHT * WIDTH
 
@@ -126,19 +125,42 @@ def _blend_backwards(
     canvas_blue_pointer = canvas_ptr + blue_offsets
     canvas_blue_value = tl.load(canvas_blue_pointer, mask=blue_pointer_mask)
 
-    if RETURN_LOSS:
-        target_red_pointers = target_ptr + red_offsets
-        target_red_value = tl.load(target_red_pointers, mask=red_pointer_mask)
-        target_green_pointers = target_ptr + green_offsets
-        target_green_value = tl.load(target_green_pointers, mask=green_pointer_mask)
-        target_blue_pointers = target_ptr + blue_offsets
-        target_blue_value = tl.load(target_blue_pointers, mask=blue_pointer_mask)
-
     for stroke_id in range(N_STROKES):
-        color_offset = stroke_id * 3
-        stroke_red_pointer = color_offset + 0
-        stroke_green_pointer = color_offset + 1
-        stroke_blue_pointer = color_offset + 2
+        if KEEP_HISTORY:  # save canvas history
+            canvas_history_red_pointer = (
+                canvas_history_ptr
+                + (stroke_id * N_COORDINATES * 3)
+                + (0 * N_COORDINATES)
+                + pixel_id
+            )
+            canvas_history_green_pointer = (
+                canvas_history_ptr
+                + (stroke_id * N_COORDINATES * 3)
+                + (1 * N_COORDINATES)
+                + pixel_id
+            )
+            canvas_history_blue_pointer = (
+                canvas_history_ptr
+                + (stroke_id * N_COORDINATES * 3)
+                + (2 * N_COORDINATES)
+                + pixel_id
+            )
+            tl.store(
+                canvas_history_red_pointer, canvas_red_value, mask=red_pointer_mask
+            )
+            tl.store(
+                canvas_history_green_pointer,
+                canvas_green_value,
+                mask=green_pointer_mask,
+            )
+            tl.store(
+                canvas_history_blue_pointer, canvas_blue_value, mask=blue_pointer_mask
+            )
+
+        stroke_color_offset = stroke_id * 3
+        stroke_red_pointer = stroke_color_offset + 0
+        stroke_green_pointer = stroke_color_offset + 1
+        stroke_blue_pointer = stroke_color_offset + 2
 
         stroke_red_value = tl.load(color_ptr + stroke_red_pointer)
         stroke_green_value = tl.load(color_ptr + stroke_green_pointer)
@@ -159,135 +181,6 @@ def _blend_backwards(
             alpha_map_value * stroke_blue_value
         )
 
-        if RETURN_LOSS:
-            stroke_loss_offset = (stroke_id * N_COORDINATES) + pixel_id
-            stroke_loss_pointer = loss_ptr + stroke_loss_offset
-            stroke_loss_value = (
-                tl.abs(canvas_red_value - target_red_value)
-                + tl.abs(canvas_green_value - target_green_value)
-                + tl.abs(canvas_blue_value - target_blue_value)
-            )
-            tl.store(stroke_loss_pointer, stroke_loss_value)
-
     tl.store(canvas_red_pointer, canvas_red_value, mask=red_pointer_mask)
     tl.store(canvas_green_pointer, canvas_green_value, mask=green_pointer_mask)
     tl.store(canvas_blue_pointer, canvas_blue_value, mask=blue_pointer_mask)
-
-
-def triton_pdf_backwards(
-    parameters: StrokeParameters,
-    height: int,
-    width: int,
-    device: torch.device,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    n_strokes = parameters.n_strokes.item()
-    n_strokes_pow2 = triton.next_power_of_2(n_strokes)
-
-    center_x = parameters.center_x.contiguous()
-    center_y = parameters.center_y.contiguous()
-    rotation = parameters.rotation.contiguous()
-    mu_r = parameters.mu_r.contiguous()
-    sigma_r = parameters.sigma_r.contiguous()
-    sigma_theta = parameters.sigma_theta.contiguous()
-    alpha = parameters.alpha.contiguous()
-
-    strokes = torch.empty(n_strokes, 1, height, width, device=device, dtype=dtype)
-
-    pdf_grid = (
-        height,
-        width,
-    )
-
-    _pdf_backwards[pdf_grid](
-        center_x_ptr=center_x,
-        center_y_ptr=center_y,
-        rotation_ptr=rotation,
-        mu_r_ptr=mu_r,
-        sigma_r_ptr=sigma_r,
-        sigma_theta_ptr=sigma_theta,
-        alpha_ptr=alpha,
-        output_ptr=strokes,
-        HEIGHT=height,
-        WIDTH=width,
-        N_STROKES=n_strokes,
-        N_STROKES_POW2=n_strokes_pow2,
-    )
-
-    return strokes
-
-
-def triton_blend_backwards(
-    canvas: torch.Tensor,
-    target: torch.Tensor,
-    strokes: torch.Tensor,
-    parameters: StrokeParameters,
-) -> torch.Tensor:
-    n_strokes = parameters.n_strokes.item()
-    _, height, width = canvas.shape
-
-    canvas = canvas.contiguous()
-    strokes = strokes.contiguous()
-    color = parameters.color.contiguous()
-    if target is not None:
-        target = target.contiguous()
-        loss = torch.empty_like(strokes)
-    else:
-        loss = None
-
-    blend_grid = (height, width)
-
-    _blend_backwards[blend_grid](
-        strokes_ptr=strokes,
-        color_ptr=color,
-        canvas_ptr=canvas,
-        target_ptr=target,
-        loss_ptr=loss,
-        N_STROKES=n_strokes,
-        HEIGHT=height,
-        WIDTH=width,
-        RETURN_LOSS=target is not None,
-    )
-
-    canvas = canvas.view(3, height, width)
-    return canvas, loss
-
-
-def triton_render_backwards(
-    parameters: StrokeParameters,
-    canvas: torch.Tensor,
-    target: torch.Tensor = None,
-) -> torch.Tensor:
-    assert parameters.alpha.is_cuda, "parameter tensors must be on cuda"
-    n_strokes = parameters.n_strokes.item()
-
-    height, width = canvas.shape[-2:]
-    device = canvas.device
-    dtype = canvas.dtype
-
-    strokes = triton_pdf_backwards(
-        parameters=parameters,
-        height=height,
-        width=width,
-        device=device,
-        dtype=dtype,
-    )
-
-    canvas, loss = triton_blend_backwards(
-        canvas=canvas,
-        target=target,
-        strokes=strokes,
-        parameters=parameters,
-    )
-
-    intermediates = {
-        "loss_unreduced": loss,
-        "strokes": strokes,
-        "canvas_untouched": canvas,
-    }
-
-    if target is not None:
-        loss = loss.mean() / n_strokes
-        return (canvas.detach(), loss, intermediates)
-    else:
-        return canvas.detach()

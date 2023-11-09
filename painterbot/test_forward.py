@@ -1,14 +1,16 @@
-from .painterbot import (
+from .torch_implementation import (
     StrokeParameters,
-    pdf,
-    blend,
-    render,
+    torch_pdf,
+    torch_blend,
+    torch_render,
 )
-from .triton_kernels import (
-    triton_pdf_forward,
-    triton_blend_forward,
-    triton_render_forward,
+from .triton_implementation import (
+    triton_pdf,
+    triton_blend,
+    triton_render,
 )
+
+from .forward import forward
 
 import torch
 from PIL import Image
@@ -38,7 +40,7 @@ if __name__ == "__main__":
         print("benchmarking PyTorch calculate_strokes")
         start = time.time()
         for i in tqdm(range(100)):
-            strokes = pdf(
+            strokes = torch_pdf(
                 height=height,
                 width=width,
                 device=device,
@@ -51,9 +53,8 @@ if __name__ == "__main__":
         start = time.time()
         for i in tqdm(range(100)):
             canvas = torch.zeros(3, height, width, device=device, dtype=dtype)
-            _ = blend(
+            _ = torch_blend(
                 canvas=canvas,
-                target=None,
                 strokes=strokes,
                 parameters=parameters,
             )
@@ -62,7 +63,7 @@ if __name__ == "__main__":
         print("benchmarking triton_pdf_forward")
         start = time.time()
         for i in tqdm(range(100)):
-            strokes = triton_pdf_forward(
+            strokes = triton_pdf(
                 height=height,
                 width=width,
                 device=device,
@@ -75,26 +76,25 @@ if __name__ == "__main__":
         start = time.time()
         for i in tqdm(range(100)):
             canvas = torch.zeros(3, height, width, device=device, dtype=dtype)
-            _ = triton_blend_forward(
+            _ = triton_blend(
                 canvas=canvas,
-                target=None,
                 strokes=strokes,
                 parameters=parameters,
             )
         print(f"Triton triton_blend_forward took {time.time() - start} seconds")
 
         canvas = torch.zeros(3, 300, 300, device=device, dtype=dtype)
-        torch_result = render(
+        torch_result = forward(
             canvas=canvas,
-            target=None,
             parameters=parameters,
+            render_fn=torch_render,
         )
 
         canvas = torch.zeros(3, 300, 300, device=device, dtype=dtype)
-        triton_result = triton_render_forward(
+        triton_result = forward(
             canvas=canvas,
-            target=None,
             parameters=parameters,
+            render_fn=triton_render,
         )
 
         compare(torch_result, triton_result, "test_result.png")
