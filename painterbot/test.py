@@ -25,7 +25,7 @@ def compare(a: torch.Tensor, b: torch.Tensor, path: str):
 
 
 if __name__ == "__main__":
-    device = torch.device("cuda:1")
+    device = torch.device("cuda:0")
     torch.cuda.set_device(device.index)
     dtype = torch.float32
     parameters = (
@@ -35,7 +35,6 @@ if __name__ == "__main__":
     height, width = 300, 300
 
     with torch.no_grad():
-
         print("benchmarking PyTorch calculate_strokes")
         start = time.time()
         for i in tqdm(range(100)):

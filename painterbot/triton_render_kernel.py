@@ -20,30 +20,33 @@ def _pdf_forwards(
     output_ptr,
     HEIGHT: tl.constexpr,
     WIDTH: tl.constexpr,
+    N_STROKES: tl.constexpr,
+    N_STROKES_POW2: tl.constexpr,
 ):
     N_COORDINATES = HEIGHT * WIDTH
 
-    stroke_id = tl.program_id(0)
-    row_id = tl.program_id(1)
-    column_id = tl.program_id(2)
+    stroke_offsets = tl.arange(0, N_STROKES_POW2)
+    layer_offsets = stroke_offsets * N_COORDINATES
+    layer_mask = stroke_offsets < N_STROKES
 
-    stroke_offset = stroke_id * N_COORDINATES
+    row_id = tl.program_id(0)
+    column_id = tl.program_id(1)
+
     row_offset = row_id * WIDTH
     column_offset = column_id
 
     coord_offset = row_offset + column_offset
-    coord_mask = coord_offset < N_COORDINATES
 
     x_coord = column_id / HEIGHT
     y_coord = row_id / HEIGHT
 
-    center_x = tl.load(center_x_ptr + stroke_id)
-    center_y = tl.load(center_y_ptr + stroke_id)
-    rotation = tl.load(rotation_ptr + stroke_id)
-    mu_r = tl.load(mu_r_ptr + stroke_id)
-    sigma_r = tl.load(sigma_r_ptr + stroke_id)
-    sigma_theta = tl.load(sigma_theta_ptr + stroke_id)
-    alpha = tl.load(alpha_ptr + stroke_id)
+    center_x = tl.load(center_x_ptr + stroke_offsets, mask=layer_mask)
+    center_y = tl.load(center_y_ptr + stroke_offsets, mask=layer_mask)
+    rotation = tl.load(rotation_ptr + stroke_offsets, mask=layer_mask)
+    mu_r = tl.load(mu_r_ptr + stroke_offsets, mask=layer_mask)
+    sigma_r = tl.load(sigma_r_ptr + stroke_offsets, mask=layer_mask)
+    sigma_theta = tl.load(sigma_theta_ptr + stroke_offsets, mask=layer_mask)
+    alpha = tl.load(alpha_ptr + stroke_offsets, mask=layer_mask)
 
     cos_rot = tl.math.cos(rotation)
     sin_rot = tl.math.sin(rotation)
@@ -79,7 +82,11 @@ def _pdf_forwards(
     pdf = tl.math.exp(-1.0 * pdf)
     pdf = pdf * alpha
 
-    tl.store(output_ptr + stroke_offset + coord_offset, pdf, mask=coord_mask)
+    store_pointers = output_ptr + layer_offsets
+
+    store_pointers = store_pointers + coord_offset
+
+    tl.store(store_pointers, pdf, mask=layer_mask)
 
 
 @triton.jit
@@ -175,6 +182,7 @@ def triton_pdf_forward(
     dtype: torch.dtype,
 ) -> torch.Tensor:
     n_strokes = parameters.n_strokes.item()
+    n_strokes_pow2 = triton.next_power_of_2(n_strokes)
 
     center_x = parameters.center_x.contiguous()
     center_y = parameters.center_y.contiguous()
@@ -187,7 +195,6 @@ def triton_pdf_forward(
     strokes = torch.empty(n_strokes, 1, height, width, device=device, dtype=dtype)
 
     pdf_grid = (
-        n_strokes,
         height,
         width,
     )
@@ -203,6 +210,8 @@ def triton_pdf_forward(
         output_ptr=strokes,
         HEIGHT=height,
         WIDTH=width,
+        N_STROKES=n_strokes,
+        N_STROKES_POW2=n_strokes_pow2,
     )
 
     return strokes
@@ -216,15 +225,13 @@ def triton_blend_forward(
 ) -> torch.Tensor:
     n_strokes = parameters.n_strokes.item()
     _, height, width = canvas.shape
-    n_coordinates = height * width
-    device = canvas.device
 
     canvas = canvas.contiguous()
     strokes = strokes.contiguous()
     color = parameters.color.contiguous()
     if target is not None:
         target = target.contiguous()
-        loss = torch.empty(n_strokes, n_coordinates, device=device)
+        loss = torch.empty_like(strokes)
     else:
         loss = None
 
@@ -273,8 +280,14 @@ def triton_render_forward(
         parameters=parameters,
     )
 
+    intermediates = {
+        "loss_unreduced": loss,
+        "strokes": strokes,
+        "canvas_untouched": canvas,
+    }
+
     if target is not None:
         loss = loss.mean() / n_strokes
-        return (canvas.detach(), loss)
+        return (canvas.detach(), loss, intermediates)
     else:
         return canvas.detach()
