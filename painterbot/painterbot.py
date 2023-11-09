@@ -138,7 +138,7 @@ def render(
         canvas = render_stroke(stroke=stroke, color=color, canvas=canvas)
 
         if target is not None:
-            loss += loss_fn(canvas.unsqueeze(0), target.unsqueeze(0), reduce=False)
+            loss += loss_fn(canvas, target, reduce=False)
 
     if target is not None:
         loss = loss.mean() / n_strokes
