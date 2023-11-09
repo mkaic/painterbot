@@ -75,14 +75,14 @@ if __name__ == "__main__":
             )
         print(f"Triton triton_blend_forward took {time.time() - start} seconds")
 
-        canvas = torch.zeros(3, 300, 300, device=device, dtype=dtype)
+        canvas = torch.zeros(3, height, width, device=device, dtype=dtype)
         torch_result = forward(
             canvas=canvas,
             parameters=parameters,
             render_fn=torch_render,
         )
 
-        canvas = torch.zeros(3, 300, 300, device=device, dtype=dtype)
+        canvas = torch.zeros(3, height, width, device=device, dtype=dtype)
         triton_result = forward(
             canvas=canvas,
             parameters=parameters,

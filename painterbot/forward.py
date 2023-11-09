@@ -38,17 +38,15 @@ def forward(
         with torch.no_grad():
             parameter_blocks_list = split_stroke_parameters(parameters, block_size=128)
 
-            if (
-                make_timelapse is None
-            ):  # means we don't even need to save canvas_history
+            if make_timelapse is None:
                 for parameter_block in parameter_blocks_list:
-                    canvas = render_fn(
+                    canvas, canvas_history = render_fn(
                         canvas=canvas,
                         parameters=parameter_block,
                         KEEP_HISTORY=False,
                     )
 
-            else:
+            if make_timelapse is not None:
                 make_timelapse = Path(make_timelapse)
                 if make_timelapse.exists():
                     shutil.rmtree(make_timelapse)

@@ -36,6 +36,8 @@ def torch_pdf(
 
     x_coordinates, y_coordinates = coordinates[:, 1, :], coordinates[:, 0, :]
 
+    print(x_coordinates.shape, offset_x.shape)
+
     x_coordinates = x_coordinates - offset_x
     y_coordinates = y_coordinates - offset_y
 

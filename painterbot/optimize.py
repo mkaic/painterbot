@@ -117,9 +117,9 @@ if __name__ == "__main__":
         device=device,
     )
 
-    n_groups = 10
-    n_strokes_per_group = 50
-    iterations = 300
+    n_groups = 4
+    n_strokes_per_group = 32
+    iterations = 100
 
     params, loss_history, mae_history = optimize(
         target,
@@ -127,7 +127,6 @@ if __name__ == "__main__":
         n_strokes_per_group=n_strokes_per_group,
         iterations=iterations,
         show_inner_pbar=True,
-        error_map_temperature=1.0,
         log_every=30,
     )
 
