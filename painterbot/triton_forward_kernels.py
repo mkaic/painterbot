@@ -1,8 +1,5 @@
-import torch
 import triton
 import triton.language as tl
-
-from .parameters import StrokeParameters
 
 BLOCK_SIZE = 32
 EPSILON = 1e-8

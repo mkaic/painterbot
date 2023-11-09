@@ -91,18 +91,15 @@ def torch_blend(
         canvas_history = None
 
     for i in range(parameters.n_strokes):
+        if KEEP_HISTORY:
+            canvas_history.append(canvas.clone())
         stroke = strokes[i]
         color = parameters.color[i]
         canvas = ((torch.ones_like(stroke) - stroke) * canvas) + (stroke * color)
 
-        if KEEP_HISTORY:
-            canvas_history.append(canvas.clone())
-
     if KEEP_HISTORY:
         canvas_history = torch.stack(canvas_history, dim=0)
-        return canvas, canvas_history
-    else:
-        return canvas
+    return canvas, canvas_history
 
 
 def torch_render(

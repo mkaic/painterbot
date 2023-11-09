@@ -1,19 +1,11 @@
+import shutil
 from pathlib import Path
+from typing import Callable
 
 import torch
 from torchvision.transforms.functional import to_pil_image
 
-from torchvision.transforms.functional import to_pil_image
-
-from .parameters import (
-    StrokeParameters,
-    split_stroke_parameters,
-)
-
-from typing import Callable
-
-import shutil
-from pathlib import Path
+from .parameters import StrokeParameters, split_stroke_parameters
 
 
 def elementwise_loss(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -42,10 +34,13 @@ def forward(
 
         return canvas.detach(), loss
 
-    else:
+    else:  # means we're in eval mode, so we don't need to compute the loss or have gradients
         with torch.no_grad():
             parameter_blocks_list = split_stroke_parameters(parameters, block_size=128)
-            if make_timelapse is None:
+
+            if (
+                make_timelapse is None
+            ):  # means we don't even need to save canvas_history
                 for parameter_block in parameter_blocks_list:
                     canvas = render_fn(
                         canvas=canvas,

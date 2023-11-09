@@ -1,26 +1,17 @@
-from .torch_implementation import (
-    StrokeParameters,
-    torch_pdf,
-    torch_blend,
-    torch_render,
-)
-from .triton_implementation import (
-    triton_pdf,
-    triton_blend,
-    triton_render,
-)
-
-from .forward import forward
+import time
 
 import torch
 from PIL import Image
 from tqdm import tqdm
-import time
+
+from .forward import forward
+from .torch_implementation import StrokeParameters, torch_blend, torch_pdf, torch_render
+from .triton_implementation import triton_blend, triton_pdf, triton_render
 
 
 def compare(a: torch.Tensor, b: torch.Tensor, path: str):
     both_results = torch.cat([a, b], dim=1)
-    both_results = (both_results.cpu().permute(2, 1, 0) * 255).to(torch.uint8).numpy()
+    both_results = (both_results.cpu().permute(1, 2, 0) * 255).to(torch.uint8).numpy()
 
     as_pil = Image.fromarray(both_results)
     as_pil.save(path)
@@ -63,12 +54,12 @@ if __name__ == "__main__":
         print("benchmarking triton_pdf_forward")
         start = time.time()
         for i in tqdm(range(100)):
-            strokes = triton_pdf(
-                height=height,
-                width=width,
-                device=device,
-                dtype=dtype,
-                parameters=parameters,
+            strokes = triton_pdf.apply(
+                parameters,
+                height,
+                width,
+                device,
+                dtype,
             )
         print(f"Triton triton_pdf_forward took {time.time() - start} seconds")
 
@@ -76,10 +67,11 @@ if __name__ == "__main__":
         start = time.time()
         for i in tqdm(range(100)):
             canvas = torch.zeros(3, height, width, device=device, dtype=dtype)
-            _ = triton_blend(
-                canvas=canvas,
-                strokes=strokes,
-                parameters=parameters,
+            _ = triton_blend.apply(
+                canvas,
+                strokes,
+                parameters,
+                False,
             )
         print(f"Triton triton_blend_forward took {time.time() - start} seconds")
 

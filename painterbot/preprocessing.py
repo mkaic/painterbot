@@ -1,7 +1,8 @@
 from pathlib import Path
-from PIL import Image
-import torchvision.transforms as T
+
 import torch
+import torchvision.transforms as T
+from PIL import Image
 
 
 def load_image(

@@ -1,20 +1,21 @@
+from typing import Tuple
+
 import torch
 import triton
 
-from .triton_forward_kernels import _pdf_forward, _blend_forward
 from .parameters import StrokeParameters
-from typing import Tuple
+from .triton_forward_kernels import _blend_forward, _pdf_forward
 
 
 class triton_pdf(torch.autograd.Function):
     @staticmethod
     def forward(
         ctx,
+        parameters: StrokeParameters,
         height: int,
         width: int,
         device: torch.device,
         dtype: torch.dtype,
-        parameters: StrokeParameters,
     ) -> torch.Tensor:
         n_strokes = parameters.n_strokes.item()
         n_strokes_pow2 = triton.next_power_of_2(n_strokes)
@@ -56,7 +57,7 @@ class triton_pdf(torch.autograd.Function):
         return strokes
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx):
         pass
 
 
@@ -102,13 +103,10 @@ class triton_blend(torch.autograd.Function):
         ctx.parameters = parameters
         ctx.strokes = strokes
 
-        if KEEP_HISTORY:
-            return canvas, canvas_history
-        else:
-            return canvas
+        return canvas, canvas_history
 
     @staticmethod
-    def backward(ctx, grad_output):
+    def backward(ctx):
         pass
 
 
@@ -121,19 +119,19 @@ def triton_render(
     device = canvas.device
     dtype = canvas.dtype
 
-    strokes = triton_pdf(
-        parameters=parameters,
-        height=height,
-        width=width,
-        device=device,
-        dtype=dtype,
+    strokes = triton_pdf.apply(
+        parameters,
+        height,
+        width,
+        device,
+        dtype,
     )
 
-    canvas, canvas_history = triton_blend(
-        canvas=canvas,
-        strokes=strokes,
-        parameters=parameters,
-        KEEP_HISTORY=KEEP_HISTORY,
+    canvas, canvas_history = triton_blend.apply(
+        canvas,
+        strokes,
+        parameters,
+        KEEP_HISTORY,
     )
 
     if KEEP_HISTORY:

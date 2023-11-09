@@ -1,23 +1,15 @@
 import os
+import shutil
 from pathlib import Path
 
 import torch
 from torchvision.transforms.functional import to_pil_image
-
-from .torch_implementation import torch_render as torch_render
-from .forward import forward
-from .preprocessing import load_image
-
-from torchvision.transforms.functional import to_pil_image
 from tqdm.auto import tqdm
 
-from .parameters import (
-    StrokeParameters,
-    concat_stroke_parameters,
-)
-
-import shutil
-from pathlib import Path
+from .forward import forward
+from .parameters import StrokeParameters, concat_stroke_parameters
+from .preprocessing import load_image
+from .torch_implementation import torch_render as torch_render
 
 
 def optimize(
