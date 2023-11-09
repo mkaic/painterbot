@@ -26,9 +26,8 @@ def forward(
             parameters=parameters,
             KEEP_HISTORY=True,
         )
-
-        target = target.unsqueeze(0)
-        target = target.repeat(parameters.n_strokes, 1, 1, 1)
+        
+        target = target.unsqueeze(0).expand(parameters.n_strokes, -1, -1, -1) # (3 x H x W) -> (N x 3 x H x W)
         loss = elementwise_loss(canvas_history, target)
         loss = torch.mean(loss)
 
