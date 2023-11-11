@@ -205,10 +205,10 @@ def split_stroke_parameters(
 
     for i in range(n_blocks):
         start = i * block_size
-        end = start + block_size
+        end = min(start + block_size, n_strokes)
 
         parameter_block = StrokeParameters(
-            n_strokes=block_size,
+            n_strokes=end - start,
             width_to_height_ratio=parameters.width_to_height_ratio.item(),
         )
 

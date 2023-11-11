@@ -25,9 +25,12 @@ def forward(
             canvas=canvas,
             parameters=parameters,
             KEEP_HISTORY=True,
+            COMPILED=True,
         )
-        
-        target = target.unsqueeze(0).expand(parameters.n_strokes, -1, -1, -1) # (3 x H x W) -> (N x 3 x H x W)
+
+        target = target.unsqueeze(0).expand(
+            parameters.n_strokes, -1, -1, -1
+        )  # (3 x H x W) -> (N x 3 x H x W)
         loss = elementwise_loss(canvas_history, target)
         loss = torch.mean(loss)
 
@@ -39,13 +42,13 @@ def forward(
 
             if make_timelapse is None:
                 for parameter_block in parameter_blocks_list:
-                    canvas, canvas_history = render_fn(
+                    canvas = render_fn(
                         canvas=canvas,
                         parameters=parameter_block,
                         KEEP_HISTORY=False,
+                        COMPILED=False,
                     )
-
-            if make_timelapse is not None:
+            else:
                 make_timelapse = Path(make_timelapse)
                 if make_timelapse.exists():
                     shutil.rmtree(make_timelapse)
@@ -56,6 +59,7 @@ def forward(
                         canvas=canvas,
                         parameters=parameter_block,
                         KEEP_HISTORY=True,
+                        COMPILED=False,
                     )
                     for j, canvas_frame in enumerate(canvas_history):
                         to_pil_image(canvas_frame).save(

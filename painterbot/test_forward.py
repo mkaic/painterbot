@@ -10,7 +10,7 @@ from .triton_implementation import triton_blend, triton_pdf, triton_render
 
 
 def compare(a: torch.Tensor, b: torch.Tensor, path: str):
-    both_results = torch.cat([a, b], dim=1)
+    both_results = torch.cat([a, b], dim=2)
     both_results = (both_results.cpu().permute(1, 2, 0) * 255).to(torch.uint8).numpy()
 
     as_pil = Image.fromarray(both_results)
@@ -28,9 +28,8 @@ if __name__ == "__main__":
     height, width = 300, 300
 
     with torch.no_grad():
-        print("benchmarking PyTorch calculate_strokes")
-        start = time.time()
-        for i in tqdm(range(100)):
+        # start = time.time()
+        for i in tqdm(range(100), leave=False):
             strokes = torch_pdf(
                 height=height,
                 width=width,
@@ -38,22 +37,24 @@ if __name__ == "__main__":
                 dtype=dtype,
                 parameters=parameters,
             )
-        print(f"PyTorch calculate_strokes took {time.time() - start} seconds")
+            if i == 0:
+                start = time.time()
+        print(f"torch_pdf: {(time.time() - start):.3f}")
 
-        print("benchmarking PyTorch blend")
-        start = time.time()
-        for i in tqdm(range(100)):
+        # start = time.time()
+        for i in tqdm(range(100), leave=False):
             canvas = torch.zeros(3, height, width, device=device, dtype=dtype)
             _ = torch_blend(
                 canvas=canvas,
                 strokes=strokes,
                 parameters=parameters,
             )
-        print(f"PyTorch blend took {time.time() - start} seconds")
+            if i == 0:
+                start = time.time()
+        print(f"torch_blend: {(time.time() - start):.3f}")
 
-        print("benchmarking triton_pdf_forward")
-        start = time.time()
-        for i in tqdm(range(100)):
+        # start = time.time()
+        for i in tqdm(range(100), leave=False):
             strokes = triton_pdf.apply(
                 parameters,
                 height,
@@ -61,11 +62,12 @@ if __name__ == "__main__":
                 device,
                 dtype,
             )
-        print(f"Triton triton_pdf_forward took {time.time() - start} seconds")
+            if i == 0:
+                start = time.time()
+        print(f"triton_pdf: {(time.time() - start):.3f}")
 
-        print("benchmarking triton_blend_forward")
-        start = time.time()
-        for i in tqdm(range(100)):
+        # start = time.time()
+        for i in tqdm(range(100), leave=False):
             canvas = torch.zeros(3, height, width, device=device, dtype=dtype)
             _ = triton_blend.apply(
                 canvas,
@@ -73,7 +75,9 @@ if __name__ == "__main__":
                 parameters,
                 False,
             )
-        print(f"Triton triton_blend_forward took {time.time() - start} seconds")
+            if i == 0:
+                start = time.time()
+        print(f"triton_blend: {(time.time() - start):.3f}")
 
         canvas = torch.zeros(3, height, width, device=device, dtype=dtype)
         torch_result = forward(

@@ -111,7 +111,10 @@ class triton_blend(torch.autograd.Function):
 
 
 def triton_render(
-    canvas: torch.Tensor, parameters: StrokeParameters, KEEP_HISTORY: bool = True
+    canvas: torch.Tensor,
+    parameters: StrokeParameters,
+    KEEP_HISTORY: bool = True,
+    COMPILED: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
     assert parameters.alpha.is_cuda, "parameter tensors must be on cuda"
 

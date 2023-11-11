@@ -10,13 +10,20 @@ EPSILON: float = 1e-8
 
 
 def torch_pdf(
+    center_x: torch.Tensor,
+    center_y: torch.Tensor,
+    rotation: torch.Tensor,
+    mu_r: torch.Tensor,
+    sigma_r: torch.Tensor,
+    sigma_theta: torch.Tensor,
+    alpha: torch.Tensor,
+    n_strokes: int,
     height: int,
     width: int,
     device: torch.device,
     dtype: torch.dtype,
-    parameters: StrokeParameters,
 ) -> torch.Tensor:
-    n_strokes = parameters.n_strokes
+    n_strokes = n_strokes
 
     w = torch.linspace(0, width - 1, width, device=device, dtype=dtype) / height
     h = torch.linspace(0, height - 1, height, device=device, dtype=dtype) / height
@@ -25,18 +32,16 @@ def torch_pdf(
     coordinates = coordinates.unsqueeze(0)  # (1 x 2 x HW)
     coordinates = coordinates.repeat(n_strokes, 1, 1)  # (N x 2 x HW)
 
-    cos_rot = torch.cos(parameters.rotation)
-    sin_rot = torch.sin(parameters.rotation)
+    cos_rot = torch.cos(rotation)
+    sin_rot = torch.sin(rotation)
 
     # Offset coordinates to change where the center of the
     # polar coordinates is placed
-    offset_x = parameters.center_x - (cos_rot * parameters.mu_r)
+    offset_x = center_x - (cos_rot * mu_r)
     # the direction of the y-axis is inverted, so we add rather than subtract
-    offset_y = parameters.center_y + (sin_rot * parameters.mu_r)
+    offset_y = center_y + (sin_rot * mu_r)
 
     x_coordinates, y_coordinates = coordinates[:, 1, :], coordinates[:, 0, :]
-
-    print(x_coordinates.shape, offset_x.shape)
 
     x_coordinates = x_coordinates - offset_x
     y_coordinates = y_coordinates - offset_y
@@ -47,7 +52,7 @@ def torch_pdf(
     # Convert to polar coordinates and apply polar-space offsets
     # (N x 2 x HW) -> (N x HW)
     r = torch.sqrt(torch.square(x_coordinates) + torch.square(y_coordinates))
-    r = r - parameters.mu_r
+    r = r - mu_r
 
     theta = torch.atan2(
         y_coordinates + EPSILON,
@@ -68,23 +73,27 @@ def torch_pdf(
 
     # sigma_r is expressed as a fraction of the radius instead of
     # an absolute quantity
-    sigma_r = parameters.sigma_r * parameters.mu_r
+    sigma_r = sigma_r * mu_r
 
     r = r / (2 * torch.square(sigma_r) + EPSILON)
-    theta = theta / (2 * torch.square(parameters.sigma_theta) + EPSILON)
+    theta = theta / (2 * torch.square(sigma_theta) + EPSILON)
     pdf = torch.exp(-1 * (r + theta))
 
-    pdf = pdf * parameters.alpha
+    pdf = pdf * alpha
 
     strokes = pdf.view(n_strokes, 1, height, width)
 
     return strokes
 
 
+torch_pdf_compiled = torch.compile(torch_pdf)
+
+
 def torch_blend(
     canvas: torch.Tensor,
     strokes: torch.Tensor,
-    parameters: StrokeParameters,
+    n_strokes: int,
+    colors: torch.Tensor,
     KEEP_HISTORY: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     if KEEP_HISTORY:
@@ -92,11 +101,11 @@ def torch_blend(
     else:
         canvas_history = None
 
-    for i in range(parameters.n_strokes):
+    for i in range(n_strokes):
         if KEEP_HISTORY:
             canvas_history.append(canvas.clone())
         stroke = strokes[i]
-        color = parameters.color[i]
+        color = colors[i]
         canvas = ((torch.ones_like(stroke) - stroke) * canvas) + (stroke * color)
 
     if KEEP_HISTORY:
@@ -104,27 +113,42 @@ def torch_blend(
     return canvas, canvas_history
 
 
+torch_blend_compiled = torch.compile(torch_blend)
+
+
 def torch_render(
     canvas: torch.Tensor,
     parameters: StrokeParameters,
     KEEP_HISTORY: bool = True,
+    COMPILED: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor] | torch.Tensor:
     height, width = canvas.shape[-2:]
     device = canvas.device
     dtype = canvas.dtype
 
-    strokes = torch_pdf(
+    pdf_fn = torch_pdf_compiled if COMPILED else torch_pdf
+    blend_fn = torch_blend_compiled if COMPILED else torch_blend
+
+    strokes = pdf_fn(
+        center_x=parameters.center_x,
+        center_y=parameters.center_y,
+        rotation=parameters.rotation,
+        mu_r=parameters.mu_r,
+        sigma_r=parameters.sigma_r,
+        sigma_theta=parameters.sigma_theta,
+        alpha=parameters.alpha,
+        n_strokes=parameters.n_strokes,
         height=height,
         width=width,
         device=device,
         dtype=dtype,
-        parameters=parameters,
     )
 
-    canvas, canvas_history = torch_blend(
+    canvas, canvas_history = blend_fn(
         canvas=canvas,
         strokes=strokes,
-        parameters=parameters,
+        n_strokes=parameters.n_strokes,
+        colors=parameters.color,
         KEEP_HISTORY=KEEP_HISTORY,
     )
 

@@ -109,7 +109,7 @@ def optimize(
 
 if __name__ == "__main__":
     device = "cuda:0"
-    image_path = "source_images/lisa.jpg"
+    image_path = Path("source_images/lisa.jpg")
 
     target = load_image(
         image_path=image_path,
@@ -117,9 +117,9 @@ if __name__ == "__main__":
         device=device,
     )
 
-    n_groups = 4
-    n_strokes_per_group = 32
-    iterations = 100
+    n_groups = 16
+    n_strokes_per_group = 64
+    iterations = 300
 
     params, loss_history, mae_history = optimize(
         target,
@@ -131,11 +131,16 @@ if __name__ == "__main__":
     )
 
     canvas = torch.zeros_like(target, device=device)
-    forward(canvas, params, Path("timelapse_frames_painting"))
+    forward(
+        canvas=canvas,
+        parameters=params,
+        render_fn=torch_render,
+        make_timelapse=Path("timelapse_frames_painting"),
+    )
 
     canvas = torch.zeros_like(target, device=device)
-    result = forward(canvas, params)
-    resul = to_pil_image(result)
+    result = forward(canvas=canvas, parameters=params, render_fn=torch_render)
+    result = to_pil_image(result)
     result.save("result.jpg")
 
     # run script to convert frames to video
