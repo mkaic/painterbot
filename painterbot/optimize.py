@@ -112,11 +112,12 @@ if __name__ == "__main__":
         image_path=image_path,
         image_size=512,
         device=device,
+        dtype=torch.bfloat16,
     )
 
-    n_groups = 3
-    n_strokes_per_group = 32
-    iterations = 100
+    n_groups = 16
+    n_strokes_per_group = 64
+    iterations = 300
 
     parameters, loss_history, mae_history = optimize(
         target,
