@@ -9,7 +9,6 @@ from tqdm.auto import tqdm
 from .forward import forward
 from .parameters import StrokeParameters, concat_stroke_parameters
 from .preprocessing import load_image
-from .torch_implementation import torch_render as torch_render
 
 
 def optimize(
@@ -68,7 +67,6 @@ def optimize(
                 canvas=canvas,
                 parameters=active_params,
                 target=target,
-                render_fn=torch_render,
             )
 
             loss.backward()
@@ -94,7 +92,6 @@ def optimize(
         canvas = forward(
             canvas=canvas,
             parameters=active_params,
-            render_fn=torch_render,
         )
         if i == 0:
             frozen_params = active_params
@@ -117,11 +114,11 @@ if __name__ == "__main__":
         device=device,
     )
 
-    n_groups = 16
-    n_strokes_per_group = 64
-    iterations = 300
+    n_groups = 3
+    n_strokes_per_group = 32
+    iterations = 100
 
-    params, loss_history, mae_history = optimize(
+    parameters, loss_history, mae_history = optimize(
         target,
         n_groups=n_groups,
         n_strokes_per_group=n_strokes_per_group,
@@ -133,25 +130,24 @@ if __name__ == "__main__":
     canvas = torch.zeros_like(target, device=device)
     forward(
         canvas=canvas,
-        parameters=params,
-        render_fn=torch_render,
+        parameters=parameters,
         make_timelapse=Path("timelapse_frames_painting"),
     )
 
     canvas = torch.zeros_like(target, device=device)
-    result = forward(canvas=canvas, parameters=params, render_fn=torch_render)
+    result = forward(canvas=canvas, parameters=parameters)
     result = to_pil_image(result)
     result.save("result.jpg")
 
     # run script to convert frames to video
     os.system("./make_timelapses.sh")
 
-    params = params.cpu()
+    parameters = parameters.cpu()
     saved_params = Path("saved_params")
     if not saved_params.exists():
         saved_params.mkdir()
 
-    params.save(
+    parameters.save(
         saved_params
         / f"{image_path.stem}_{n_groups}_{n_strokes_per_group}_{iterations}.pt",
     )

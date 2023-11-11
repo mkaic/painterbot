@@ -6,6 +6,7 @@ import torch
 from torchvision.transforms.functional import to_pil_image
 
 from .parameters import StrokeParameters, split_stroke_parameters
+from .render import render
 
 
 def elementwise_loss(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -16,7 +17,7 @@ def elementwise_loss(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 def forward(
     canvas: torch.Tensor,
     parameters: StrokeParameters,
-    render_fn: Callable,
+    render_fn: Callable = render,
     target: torch.Tensor = None,
     make_timelapse: Path = None,
 ):

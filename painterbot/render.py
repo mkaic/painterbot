@@ -9,7 +9,7 @@ from .parameters import StrokeParameters
 EPSILON: float = 1e-8
 
 
-def torch_pdf(
+def pdf(
     center_x: torch.Tensor,
     center_y: torch.Tensor,
     rotation: torch.Tensor,
@@ -86,10 +86,10 @@ def torch_pdf(
     return strokes
 
 
-torch_pdf_compiled = torch.compile(torch_pdf)
+pdf_compiled = torch.compile(pdf)
 
 
-def torch_blend(
+def blend(
     canvas: torch.Tensor,
     strokes: torch.Tensor,
     n_strokes: int,
@@ -113,10 +113,10 @@ def torch_blend(
     return canvas, canvas_history
 
 
-torch_blend_compiled = torch.compile(torch_blend)
+blend_compiled = torch.compile(blend)
 
 
-def torch_render(
+def render(
     canvas: torch.Tensor,
     parameters: StrokeParameters,
     KEEP_HISTORY: bool = True,
@@ -126,8 +126,8 @@ def torch_render(
     device = canvas.device
     dtype = canvas.dtype
 
-    pdf_fn = torch_pdf_compiled if COMPILED else torch_pdf
-    blend_fn = torch_blend_compiled if COMPILED else torch_blend
+    pdf_fn = pdf_compiled if COMPILED else pdf
+    blend_fn = blend_compiled if COMPILED else blend
 
     strokes = pdf_fn(
         center_x=parameters.center_x,
