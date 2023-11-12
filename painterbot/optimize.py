@@ -112,7 +112,7 @@ if __name__ == "__main__":
         image_path=image_path,
         image_size=512,
         device=device,
-        dtype=torch.bfloat16,
+        dtype=torch.float32,
     )
 
     n_groups = 16

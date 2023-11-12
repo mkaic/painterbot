@@ -1,6 +1,5 @@
 import shutil
 from pathlib import Path
-from typing import Callable
 
 import torch
 from torchvision.transforms.functional import to_pil_image
@@ -8,21 +7,91 @@ from torchvision.transforms.functional import to_pil_image
 from .parameters import StrokeParameters, split_stroke_parameters
 from .render import render
 
+EPSILON = 1e-8
 
-def elementwise_loss(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-    abs_error = torch.abs(x - y)
-    return abs_error
+
+def rgb_to_oklab(rgb: torch.Tensor) -> torch.Tensor:
+    # https://bottosson.github.io/posts/oklab/
+
+    batch, _, height, width = rgb.shape
+    rgb = rgb.reshape(3, -1)
+    rgb = rgb.clamp(0, 1) + EPSILON
+
+    # sRGB to Linear sRGB
+    rgb = torch.where(
+        rgb > 0.04045,
+        ((rgb + 0.055) / 1.055).pow(2.4),
+        rgb / 12.92,
+    )
+
+    m1 = torch.tensor(
+        [
+            [0.4122214708, 0.5363325363, -0.051445992],
+            [0.2119034982, 0.6806995451, 0.1073969566],
+            [0.0883024619, 0.2817188376, 0.6299787005],
+        ],
+        device=rgb.device,
+        dtype=rgb.dtype,
+    )
+
+    # Approximate cone response
+    # (BHW x 3 x 3) @ (BHW x 3 x 1) -> (BHW x 3)
+    lms = torch.matmul(
+        m1,
+        rgb,
+    )
+    # torch produces NaNs when you try to cube-root a negative number
+    # so this sign workaround is necessary. and an epsilon, just in case
+    lms = lms.sign() * (lms.abs() + EPSILON).pow(1 / 3)
+
+    m2 = torch.tensor(
+        [
+            [0.2104542553, 0.7936177850, -0.0040720468],
+            [1.9779984951, -2.4285922050, 0.4505937099],
+            [0.0259040371, 0.7827717662, -0.8086757660],
+        ],
+        device=rgb.device,
+        dtype=rgb.dtype,
+    )
+
+    oklab = torch.matmul(
+        m2,
+        lms,
+    )
+
+    oklab = oklab.view(batch, 3, height, width)
+
+    return oklab
+
+
+# import colour
+# print(rgb_to_oklab(torch.tensor([1.0, 1.0, 0.0]).view(1, 3, 1, 1)))
+# print(colour.convert([1.0, 1.0, 0.0], "sRGB", "Oklab"))
+
+
+@torch.compile
+def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    # convert to perceptually uniform color space
+    x = rgb_to_oklab(x)
+    y = rgb_to_oklab(y)
+
+    # ||L_r - L_t|| + distance(C_r, C_t)
+    luminance_l2 = torch.mean(torch.square(x[:, 0, :, :] - y[:, 0, :, :]))
+    chroma_squared_euclidean_distance = torch.mean(
+        torch.sum(torch.square(x[:, 1:, :, :] - y[:, 1:, :, :]), dim=1)
+    )
+
+    return luminance_l2 + chroma_squared_euclidean_distance
 
 
 def forward(
     canvas: torch.Tensor,
     parameters: StrokeParameters,
-    render_fn: Callable = render,
     target: torch.Tensor = None,
     make_timelapse: Path = None,
 ):
     if target is not None:
-        canvas, canvas_history = render_fn(
+        canvas, canvas_history = render(
             canvas=canvas,
             parameters=parameters,
             KEEP_HISTORY=True,
@@ -32,8 +101,7 @@ def forward(
         target = target.unsqueeze(0).expand(
             parameters.n_strokes, -1, -1, -1
         )  # (3 x H x W) -> (N x 3 x H x W)
-        loss = elementwise_loss(canvas_history, target)
-        loss = torch.mean(loss)
+        loss = loss_fn(canvas_history, target)
 
         return canvas.detach(), loss
 
@@ -43,7 +111,7 @@ def forward(
 
             if make_timelapse is None:
                 for parameter_block in parameter_blocks_list:
-                    canvas = render_fn(
+                    canvas = render(
                         canvas=canvas,
                         parameters=parameter_block,
                         KEEP_HISTORY=False,
@@ -56,7 +124,7 @@ def forward(
                 make_timelapse.mkdir()
 
                 for i, parameter_block in enumerate(parameter_blocks_list):
-                    canvas, canvas_history = render_fn(
+                    canvas, canvas_history = render(
                         canvas=canvas,
                         parameters=parameter_block,
                         KEEP_HISTORY=True,
