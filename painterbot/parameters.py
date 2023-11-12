@@ -9,9 +9,14 @@ class StrokeParameters(nn.Module):
     def __init__(self, n_strokes: int, width_to_height_ratio: float):
         super().__init__()
 
-        self.register_buffer("n_strokes", torch.tensor(n_strokes))
-        self.register_buffer(
-            "width_to_height_ratio", torch.tensor(width_to_height_ratio)
+        self.n_strokes = nn.Parameter(
+            torch.tensor(n_strokes),
+            requires_grad=False,
+        )
+
+        self.width_to_height_ratio = nn.Parameter(
+            torch.tensor(width_to_height_ratio),
+            requires_grad=False,
         )
 
         self.center_x = torch.ones(n_strokes, 1) * width_to_height_ratio * 0.5
@@ -70,25 +75,22 @@ class StrokeParameters(nn.Module):
             error_map.view(-1), dim=0
         )  # (H, W) -> (H*W)
 
-        n_samples = self.n_strokes
+        n_strokes = self.n_strokes.item()
 
-        coordinates = torch.multinomial(flat_error_pdf, n_samples)  # (N, 1)
-
-        new_coords = torch.zeros(2, len(coordinates), dtype=torch.long, device=device)
+        coordinates = torch.multinomial(flat_error_pdf, n_strokes).unsqueeze(
+            -1
+        )  # (N, 1)
 
         # x coordinates (which column the flat index is in)
         # are found by moduloing it by the length of a row
-        new_coords[0, :] = coordinates % width
+        center_x = coordinates % width
+        center_x = center_x
 
         # y coordinates (which row the flat index is in) are
         # found by integer-dividing it by the length of a column
-        new_coords[1, :] = torch.div(coordinates, height, rounding_mode="floor")
-
-        coordinates = new_coords.unsqueeze(-1)  # (N, 1) -> (2, N, 1)
-
-        center_x, center_y = coordinates
-
-        color = target[:, center_y, center_x].view(self.n_strokes, 3, 1, 1)
+        center_y = torch.div(coordinates, width, rounding_mode="floor")
+        center_y = center_y
+        color = target[:, center_y, center_x].view(n_strokes, 3, 1, 1)
 
         center_x = center_x / height
         center_x = center_x.detach().clone()

@@ -1,6 +1,7 @@
 import shutil
 from pathlib import Path
 
+import kornia
 import torch
 from torchvision.transforms.functional import to_pil_image
 
@@ -81,7 +82,12 @@ def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         torch.sum(torch.square(x[:, 1:, :, :] - y[:, 1:, :, :]), dim=1)
     )
 
-    return luminance_l2 + chroma_squared_euclidean_distance
+    edges_x = kornia.filters.sobel(x)
+    edges_y = kornia.filters.sobel(y)
+
+    edges_l2 = torch.mean(torch.square(edges_x - edges_y))
+
+    return luminance_l2 + chroma_squared_euclidean_distance + edges_l2
 
 
 def forward(

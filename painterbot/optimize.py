@@ -106,11 +106,12 @@ def optimize(
 
 if __name__ == "__main__":
     device = "cuda:0"
-    image_path = Path("source_images/lisa.jpg")
+    image_path = Path("source_images/sunrise.png")
 
     target = load_image(
         image_path=image_path,
         image_size=512,
+        crop=False,
         device=device,
         dtype=torch.float32,
     )

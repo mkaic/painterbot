@@ -9,6 +9,7 @@ def load_image(
     image_path: Path,
     device: torch.device,
     image_size: int = 512,
+    crop: bool = False,
     dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
     image_path = Path(image_path)
@@ -18,7 +19,7 @@ def load_image(
         [
             T.PILToTensor(),
             T.Resize(image_size, antialias=True),
-            T.CenterCrop(image_size),
+            T.CenterCrop(image_size) if crop else T.Lambda(lambda x: x),
         ]
     )
     target: torch.Tensor = preprocessing(target)
