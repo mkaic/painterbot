@@ -10,6 +10,8 @@ from .forward import forward
 from .parameters import StrokeParameters, concat_stroke_parameters
 from .preprocessing import load_image
 
+from torch.optim import Adam
+
 
 def optimize(
     target: torch.Tensor,
@@ -54,13 +56,13 @@ def optimize(
         )
 
         resolution = (
-            256  # max(min(min(height, width), frozen_params.n_strokes.item()), 64)
+            512  # max(min(min(height, width), frozen_params.n_strokes.item()), 64)
         )
-        target_resized = resize(target, resolution, antialias=True)
-        canvas_resized = resize(canvas, resolution, antialias=True)
+        target_ = target  # resize(target, resolution, antialias=True)
+        canvas_ = canvas  # resize(canvas, resolution, antialias=True)
 
-        optimizer = torch.optim.Adam(
-            active_params.parameters(), lr=lr, betas=(0.8, 0.9)
+        optimizer = Adam(
+            active_params.parameters(), lr=lr, betas=(0.9, 0.95)
         )
 
         best_loss = 100.0
@@ -76,9 +78,9 @@ def optimize(
                 break
 
             result, loss = forward(
-                canvas=canvas_resized,
+                canvas=canvas_,
                 parameters=active_params,
-                target=target_resized,
+                target=target_,
             )
 
             loss.backward()
@@ -89,7 +91,7 @@ def optimize(
 
             active_params.clamp_parameters()
 
-            mae = torch.mean(torch.abs(result - target_resized))
+            mae = torch.mean(torch.abs(result - target_))
 
             if show_inner_pbar:
                 description = f"Loss={loss:.6f}, MAE={mae:.5f}"
@@ -125,7 +127,7 @@ def optimize(
 
 if __name__ == "__main__":
     device = "cuda:0"
-    image_path = Path("source_images/sunrise.png")
+    image_path = Path("source_images/lisa.jpg")
 
     target = load_image(
         image_path=image_path,
@@ -135,7 +137,7 @@ if __name__ == "__main__":
         dtype=torch.float32,
     )
 
-    n_groups = 64
+    n_groups = 8
     n_strokes_per_group = 64
     iterations = 256
 
