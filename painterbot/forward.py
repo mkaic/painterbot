@@ -1,7 +1,6 @@
 import shutil
 from pathlib import Path
 
-import kornia
 import torch
 from torchvision.transforms.functional import to_pil_image
 
@@ -70,7 +69,6 @@ def rgb_to_oklab(rgb: torch.Tensor) -> torch.Tensor:
 # print(colour.convert([1.0, 1.0, 0.0], "sRGB", "Oklab"))
 
 
-@torch.compile
 def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     # convert to perceptually uniform color space
     x = rgb_to_oklab(x)
@@ -82,12 +80,10 @@ def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         torch.sum(torch.square(x[:, 1:, :, :] - y[:, 1:, :, :]), dim=1)
     )
 
-    edges_x = kornia.filters.sobel(x)
-    edges_y = kornia.filters.sobel(y)
+    return luminance_l2 + chroma_squared_euclidean_distance
 
-    edges_l2 = torch.mean(torch.square(edges_x - edges_y))
 
-    return luminance_l2 + chroma_squared_euclidean_distance + edges_l2
+loss_fn_compiled = torch.compile(loss_fn)
 
 
 def forward(
@@ -107,7 +103,7 @@ def forward(
         target = target.unsqueeze(0).expand(
             parameters.n_strokes, -1, -1, -1
         )  # (3 x H x W) -> (N x 3 x H x W)
-        loss = loss_fn(canvas_history, target)
+        loss = loss_fn_compiled(canvas_history, target)
 
         return canvas.detach(), loss
 
