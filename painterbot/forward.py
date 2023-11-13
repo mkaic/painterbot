@@ -6,8 +6,10 @@ from torchvision.transforms.functional import to_pil_image
 
 from .parameters import StrokeParameters, split_stroke_parameters
 from .render import render
+from .ms_ssim import MS_SSIM
 
 EPSILON = 1e-8
+ms_ssim = MS_SSIM(data_range=1.0, size_average=True, channel=3)
 
 
 def rgb_to_oklab(rgb: torch.Tensor) -> torch.Tensor:
@@ -80,7 +82,9 @@ def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         torch.sum(torch.square(x[:, 1:, :, :] - y[:, 1:, :, :]), dim=1)
     )
 
-    return luminance_l2 + chroma_squared_euclidean_distance
+    ms_ssim_loss = -ms_ssim(x, y)
+
+    return luminance_l2 + chroma_squared_euclidean_distance + ms_ssim_loss
 
 
 loss_fn_compiled = torch.compile(loss_fn)
