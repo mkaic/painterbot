@@ -45,21 +45,22 @@ def optimize(
     canvas = torch.zeros_like(target)
 
     for i in outer_pbar:
-        active_params = StrokeParameters(
-            n_strokes=n_strokes_per_group,
-            width_to_height_ratio=width_to_height_ratio,
-        ).to(device)
-
-        active_params.smart_init(
-            target=target,
-            canvas=canvas,
-        )
 
         resolution = (
             512  # max(min(min(height, width), frozen_params.n_strokes.item()), 64)
         )
         target_ = target  # resize(target, resolution, antialias=True)
         canvas_ = canvas  # resize(canvas, resolution, antialias=True)
+
+        active_params = StrokeParameters(
+            n_strokes=n_strokes_per_group,
+            width_to_height_ratio=width_to_height_ratio,
+        ).to(device)
+
+        active_params.smart_init(
+            target=target_,
+            canvas=canvas_,
+        )
 
         optimizer = Adam(
             active_params.parameters(), lr=lr, betas=(0.9, 0.95)
